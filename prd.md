@@ -834,7 +834,12 @@ class TofuHostKeys(
         store.writeText(known.entries.joinToString("\n") { "${it.key}\t${it.value}" })
     }
 
-    override fun add(hostkey: HostKey, ui: UserInfo?) = trust(hostkey.host, fingerprint(hostkey.key))
+    /** HostKey 的 key 字段是 protected，外部无法读取，故复用 check() 时缓存的指纹 */
+    override fun add(hostkey: HostKey, ui: UserInfo?) {
+        val h = lastHost ?: return
+        val fp = lastFingerprint ?: return
+        trust(h, fp)
+    }
     override fun remove(host: String, type: String?) = known.remove(host).let { persist() }
     override fun remove(host: String, type: String?, key: ByteArray?) { known.remove(host); persist() }
     override fun getKnownHostsRepositoryID(): String = store.absolutePath
@@ -1326,9 +1331,12 @@ class MainActivity : AppCompatActivity() {
 
 ## 六、部署与使用步骤
 
+0. **构建手机 App**：用 Android Studio 打开 `android/` 目录（AGP 8.1.4 / Gradle 8.2 / JDK 17，AS 自带）→ Sync → Run 到手机；
+   产物也可自行 `gradlew assembleDebug`。
 1. **手机**：安装 App → 开启开发者选项 / USB 调试 → 打开 App 点击"启动服务"（首次会申请通知权限）→ USB 连接 PC，弹窗授权调试；
    记下界面/通知栏显示的 **Token**。
-2. **PC**：`adb devices` 确认设备在线 → `pip install -r requirements.txt` → `python ui.py`；
+2. **PC**：`adb devices` 确认设备在线 → `pip install -r requirements.txt` → `python ui.py`
+   （若命令行无 `python`，Windows 上用 `py ui.py`；`adb` 需在 PATH 中，或改 `adb_manager.Adb(path=...)` 指定绝对路径）；
 3. 点击"刷新设备" → 填入手机上的 Token → "连接"，然后：
    - **消息**：Tab1 双向互发文本；
    - **文件**：Tab2 选文件即传，表格按文件分行显示进度；手机发来的文件在 `./downloads/`；手机端用"发送文件到 PC"回传；
