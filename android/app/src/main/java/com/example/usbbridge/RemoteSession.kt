@@ -36,7 +36,7 @@ class RemoteSession(
         ch.setOutputStream(fwdStream("out"))
         ch.connect(10_000)
         channel = ch
-        watchClose(ch) { onClose(0, "shell 已退出") }
+        watchClose(ch) { onClose(0, "shell exited") }
     }
 
     /** One-shot command execution (kind=exec): supports stdin, returns the exit code on completion */
@@ -49,7 +49,7 @@ class RemoteSession(
             ch.setErrStream(fwdStream("err"))
             ch.connect(10_000)
             channel = ch
-            watchClose(ch) { onClose(ch.exitStatus, "exec 完成") }
+            watchClose(ch) { onClose(ch.exitStatus, "exec finished") }
         }
 
     private fun connect(host: String, port: Int, user: String, auth: Auth, block: () -> Unit) {

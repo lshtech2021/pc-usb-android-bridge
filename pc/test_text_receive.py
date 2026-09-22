@@ -8,7 +8,7 @@ from protocol import MsgType, encode_frame, decode_frame
 
 
 def test_text_frame_roundtrip():
-    payload_header = {"id": 7, "text": "hello from PC 你好"}
+    payload_header = {"id": 7, "text": "hello from PC 100\u20ac"}
     raw = encode_frame(MsgType.TEXT, payload_header)
     assert raw[:2] == b"\xAB\xCD"
     assert raw[2] == MsgType.TEXT
@@ -27,7 +27,7 @@ def test_text_frame_roundtrip():
     t, h, p = decode_frame(read)
     assert t == MsgType.TEXT
     assert h["id"] == 7
-    assert h["text"] == "hello from PC 你好"
+    assert h["text"] == "hello from PC 100\u20ac"
     assert p == b""
 
 

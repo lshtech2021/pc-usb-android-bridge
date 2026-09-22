@@ -1,172 +1,172 @@
-# USB Bridge —— 部署与使用说明
+# USB Bridge — Deployment and Usage Guide
 
-PC 端（Python + PyQt5）通过 USB 线连接手机端 App（Android 前台服务），实现三件事：
+The PC client (Python + PyQt5) connects to the phone app (Android foreground service) over a USB cable and does three things:
 
-1. **双向传文件**（PC ↔ 手机，256KB 分块 + SHA256 校验）
-2. **双向发文本**
-3. **PC 远程操作**：手机作 SSH 代理，去连一台远程服务器，PC 借手机操作该服务器
+1. **Bidirectional file transfer** (PC ↔ phone, 256KB chunks + SHA256 verification)
+2. **Bidirectional text messaging**
+3. **PC remote operation**: the phone acts as an SSH proxy to reach a remote server, letting the PC operate that server through the phone
 
-设计细节与协议定义见 [prd.md](./prd.md)。
+See [prd.md](./prd.md) for design details and the protocol definition.
 
 ---
 
-## 一、目录结构
+## 1. Directory Structure
 
 ```
 app-demo-6/
-├── prd.md                    设计文档（协议、架构、验收标准）
-├── pc/                       PC 端客户端
-│   ├── ui.py                 入口：PyQt5 界面（在此目录启动）
-│   ├── client.py             业务逻辑：文本/文件/远程通道/心跳
-│   ├── protocol.py           帧编解码（与 Android 端字节序一致）
-│   ├── transport.py          TCP 收发
-│   ├── adb_manager.py        adb 设备列表与端口转发
-│   ├── requirements.txt      依赖
-│   └── downloads/            手机发来的文件落在这里（首次运行自动创建）
-└── android/                  Android 工程（Android Studio 打开此目录）
+├── prd.md                    Design document (protocol, architecture, acceptance criteria)
+├── pc/                       PC-side client
+│   ├── ui.py                 Entry point: PyQt5 UI (start it from this directory)
+│   ├── client.py             Business logic: text/files/remote channels/heartbeat
+│   ├── protocol.py           Frame encode/decode (byte order matches the Android side)
+│   ├── transport.py          TCP send/receive
+│   ├── adb_manager.py        adb device listing and port forwarding
+│   ├── requirements.txt      Dependencies
+│   └── downloads/            Files sent from the phone land here (created on first run)
+└── android/                  Android project (open this directory in Android Studio)
     └── app/src/main/java/com/example/usbbridge/
-        ├── MainActivity.kt   界面：启动服务 / 显示 Token / 发文本 / 发文件
-        ├── BridgeService.kt  前台服务 + 会话处理 + 文件落盘
-        ├── FrameIO.kt        协议镜像实现
-        ├── RemoteSession.kt  JSch SSH 代理
-        └── TofuHostKeys.kt   主机指纹库（TOFU）
+        ├── MainActivity.kt   UI: start service / show Token / send text / send file
+        ├── BridgeService.kt  Foreground service + session handling + file writing
+        ├── FrameIO.kt        Protocol mirror implementation
+        ├── RemoteSession.kt  JSch SSH proxy
+        └── TofuHostKeys.kt   Host fingerprint store (TOFU)
 ```
 
 ---
 
-## 二、环境要求
+## 2. Requirements
 
-| 端 | 要求 |
+| Side | Requirement |
 |---|---|
-| PC | Windows / Linux / macOS；Python 3.8+；PyQt5；`adb`（Android platform-tools）需在 PATH 中 |
-| 手机 | Android 7.0（API 24）及以上，推荐 Android 8.0+；已开启「开发者选项 → USB 调试」 |
-| 构建 Android | Android Studio（自带 JDK 17）；AGP 8.1.4 / Gradle 8.2 |
+| PC | Windows / Linux / macOS; Python 3.8+; PyQt5; `adb` (Android platform-tools) must be on PATH |
+| Phone | Android 7.0 (API 24) or later, Android 8.0+ recommended; "Developer options → USB debugging" enabled |
+| Android build | Android Studio (bundles JDK 17); AGP 8.1.4 / Gradle 8.2 |
 
 ---
 
-## 三、部署步骤
+## 3. Deployment Steps
 
-### 1. 构建并安装手机 App
+### 1. Build and install the phone app
 
-用 Android Studio **打开 `android/` 目录**（不是仓库根目录），等待 Gradle Sync 完成后 Run 到手机。
+**Open the `android/` directory** in Android Studio (not the repository root), wait for Gradle Sync to finish, then Run to the phone.
 
-命令行方式（需先 Sync 一次让 Android Studio 生成 gradle wrapper，或用本机已安装的 `gradle`）：
+Command-line alternative (first run a Sync in Android Studio so the gradle wrapper is generated, or use a locally installed `gradle`):
 
 ```bash
 cd android
-gradlew assembleDebug                # 产物：app/build/outputs/apk/debug/app-debug.apk
+gradlew assembleDebug                # Output: app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-授予通知权限（首次启动会弹窗）。拒绝也能用，只是「PC 发来文本」不再有通知栏提醒。
+Grant notification permission (a dialog appears on first launch). Denying it still works; you just no longer get notification-bar alerts for "text from PC".
 
-### 2. 准备 PC 端
+### 2. Prepare the PC side
 
 ```bash
 cd pc
-pip install -r requirements.txt      # 只装 PyQt5
+pip install -r requirements.txt      # Only installs PyQt5
 ```
 
-若命令行没有 `python`（Windows 只装了 py 启动器），用：
+If `python` is not available on the command line (Windows with only the py launcher), use:
 
 ```powershell
 py ui.py
 ```
 
-`adb` 不在 PATH 时，有两种办法：把 platform-tools 目录加进 PATH，或改 [ui.py](./pc/ui.py) 里构造 `Adb` 的那行，指定绝对路径：
+If `adb` is not on PATH, there are two options: add the platform-tools directory to PATH, or edit the line in [ui.py](./pc/ui.py) that constructs `Adb` to specify an absolute path:
 
 ```python
 self.adb, self.client, self.ch = Adb(path=r"D:\platform-tools\adb.exe"), PhoneClient(), None
 ```
 
-### 3. 启动手机服务并连接
+### 3. Start the phone service and connect
 
-1. 手机打开 App → 点「**启动 USB Bridge 服务**」→ 界面显示 `服务已启动，监听 127.0.0.1:9999` 与 **Token**（8 位十六进制），通知栏同样显示。
-2. USB 连接手机与 PC，手机上确认「允许 USB 调试」。
-3. PC 上确认设备可见：
+1. Open the app on the phone → tap "**Start USB Bridge service**" → the UI shows `Service started, listening on 127.0.0.1:9999` plus the **Token** (8 hex digits), which also appears in the notification bar.
+2. Connect the phone to the PC over USB and confirm "Allow USB debugging" on the phone.
+3. On the PC, confirm the device is visible:
 
 ```bash
-adb devices          # 看到 "<serial>   device" 才算可连（unauthorized 表示还没在手机上点允许）
+adb devices          # Only "<serial>   device" means it is connectable (unauthorized means you have not tapped Allow on the phone yet)
 ```
 
-4. PC 运行 `py ui.py` → 点「**刷新设备**」选中手机 → 填入手机上的 **Token** → 点「**连接**」。顶部状态变为 `已连接 <serial>`，消息面板出现 `[已连接手机: <型号>]`。
+4. Run `py ui.py` on the PC → tap "**Refresh Devices**" and select the phone → enter the **Token** shown on the phone → tap "**Connect**". The top status changes to `Connected <serial>` and the message panel shows `[Phone connected: <model>]`.
 
-> 连接时 PC 会自动执行 `adb -s <serial> forward tcp:12580 tcp:9999`（先 `--remove-all` 清理残留），把 PC 的 `127.0.0.1:12580` 映射到手机服务的 `127.0.0.1:9999`。链路加密由 USB + adb 提供，协议本身不额外加密。
-
----
-
-## 四、使用说明
-
-### 消息（Tab 1）
-
-输入框打字回车发送，`[PC] xxx` 是本机发出，`[手机] xxx` 是手机发来；手机收到 PC 文本会出通知栏提醒。
-手机端发文本：App 里输入内容 → 「发送文本到 PC」（**需要 PC 先连接成功**，否则没有接收方）。
-
-### 文件（Tab 2）
-
-- **PC → 手机**：点「选择文件发送到手机…」，表格按文件分行显示进度，可同时发多个。
-- **手机 → PC**：App 里点「发送文件到 PC」选文件；PC 收到后落在 `pc/downloads/`，表格显示 `✓ 完成 → 完整路径`。
-- 重名不覆盖：两端都按 `name(1).ext`、`name(2).ext` 递增。
-- 两端都做 SHA256 校验，不一致则删除落盘文件并标记失败。
-
-### 远程终端（Tab 3）
-
-1. 填目标服务器 `IP / 端口 / 用户名 / 密码`；用密钥则勾「使用私钥」并选私钥文件（可填私钥口令）。
-2. 「**经手机 SSH 连接(shell)**」：建立交互式 shell，底部输入框回车把整行命令送到远端，输出实时回流。
-3. 「**exec 执行一次**」：右侧输入框填一次性命令（如 `uname -a`），执行完回传 stdout/stderr 与退出码，通道自动关闭。
-4. 「**断开**」：关闭当前远程通道（只断 SSH，不断 USB 连接）。
-
-首次连某台目标服务器时，会弹窗展示该主机的 `SHA256:...` 指纹，请你与服务器管理员核对后选择「信任并继续」；确认后写入手机的 known_hosts，下次不再询问。
-若指纹与记录**不一致**，直接红色告警并拒绝连接（疑似中间人攻击），不提供「忽略」入口。
-
-可用 `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub` 在目标服务器上核对指纹。
-
-### 断开与退出
-
-- PC 点「**断开**」：关闭连接并移除 `adb forward`；PC 端未传完的文件会被删除。
-- 手机上划掉 App 或停止服务：释放监听端口。
-- 不自动重连，需要时重新点「连接」。
+> On connect, the PC automatically runs `adb -s <serial> forward tcp:12580 tcp:9999` (after `--remove-all` to clear leftovers), mapping the PC's `127.0.0.1:12580` to the phone service's `127.0.0.1:9999`. Link encryption is provided by USB + adb; the protocol itself adds no extra encryption.
 
 ---
 
-## 五、数据与文件位置
+## 4. Usage
 
-| 内容 | 位置 |
+### Messages (Tab 1)
+
+Type in the input box and press Enter to send; `[PC] xxx` is sent from this machine and `[Phone] xxx` came from the phone; when the phone receives PC text it raises a notification-bar alert.
+To send text from the phone: type the content in the app → "Send text to PC" (**the PC must be connected first**, otherwise there is no receiver).
+
+### Files (Tab 2)
+
+- **PC → phone**: tap "Choose a file to send to phone..."; the table shows progress in one row per file, and multiple files can be sent at once.
+- **Phone → PC**: tap "Send file to PC" in the app and choose a file; the PC saves it under `pc/downloads/` and the table shows `✓ Done -> full path`.
+- Duplicate names are never overwritten: both sides increment through `name(1).ext`, `name(2).ext`.
+- Both sides verify SHA256; on mismatch the written file is deleted and marked as failed.
+
+### Remote Terminal (Tab 3)
+
+1. Fill in the target server `IP / port / username / password`; to use a key, check "Use private key" and choose the key file (a key passphrase may also be entered).
+2. "**SSH via phone (shell)**": opens an interactive shell; pressing Enter in the bottom input box sends the whole line to the remote end, and output streams back in real time.
+3. "**Run exec once**": enter a one-shot command in the box on the right (e.g. `uname -a`); when it finishes, stdout/stderr and the exit code come back and the channel closes automatically.
+4. "**Disconnect**": closes the current remote channel (closes only SSH, not the USB connection).
+
+The first time you connect to a given target server, a dialog shows that host's `SHA256:...` fingerprint; verify it with the server administrator and then choose "Trust and continue". Once confirmed it is written to the phone's known_hosts and you are not asked again.
+If the fingerprint **does not match** the record, the connection is refused immediately with a red warning (possible man-in-the-middle attack) and there is no "ignore" option.
+
+You can cross-check the fingerprint on the target server with `ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub`.
+
+### Disconnecting and Exiting
+
+- Tapping "**Disconnect**" on the PC closes the connection and removes the `adb forward`; files the PC had not finished sending are deleted.
+- Swiping the app away or stopping the service on the phone releases the listening port.
+- There is no automatic reconnect; tap "Connect" again when needed.
+
+---
+
+## 5. Data and File Locations
+
+| Content | Location |
 |---|---|
-| PC 收到手机的文件 | `<启动 ui.py 时的目录>/downloads/` |
-| PC 发往手机的文件 | `Android/data/com.example.usbbridge/files/`（App 外部私有目录，免存储权限） |
-| 手机收到的文本 | 通知栏 + App 界面提示 |
-| 手机 known_hosts（主机指纹） | `/data/data/com.example.usbbridge/files/known_hosts`（非 root 不可见，清除应用数据即重置） |
-| SSH 密码 / 私钥内容 | 仅内存传递，不写文件 |
+| Files the PC received from the phone | `<directory where ui.py was started>/downloads/` |
+| Files the PC sends to the phone | `Android/data/com.example.usbbridge/files/` (app external private dir, no storage permission needed) |
+| Text received by the phone | Notification bar + in-app UI notice |
+| Phone known_hosts (host fingerprints) | `/data/data/com.example.usbbridge/files/known_hosts` (not visible without root; clearing app data resets it) |
+| SSH passwords / private-key contents | Passed through memory only, never written to disk |
 
-> 若需「重新确认某主机的指纹」，在手机「设置 → 应用 → USB Bridge → 存储 → 清除数据」，或卸载重装。
+> To "re-confirm a host's fingerprint", go to the phone's "Settings → Apps → USB Bridge → Storage → Clear data", or uninstall and reinstall.
 
 ---
 
-## 六、常见问题
+## 6. Troubleshooting
 
-| 现象 | 原因与处理 |
+| Symptom | Cause and fix |
 |---|---|
-| `刷新设备` 列表为空 | 未开 USB 调试 / 未在手机上点「允许」/ 数据线只充电不传数据；先在命令行跑 `adb devices` 看状态 |
-| 提示 `[adb 不可用]` | `adb` 不在 PATH；按“准备 PC 端”一节指定绝对路径 |
-| 连接后立刻断开，消息面板出现 `BAD_TOKEN` | Token 填错，或手机服务重启过（Token 会重新生成）；以手机界面当前显示为准 |
-| 提示端口占用 / forward 失败 | 12580 被占用，或上一次 forward 残留；断开后重连即可（连接前会自动 `--remove-all`） |
-| 手机点了「启动服务」没反应 | 通知权限/前台服务被系统限制；到设置里允许通知，或关掉电池优化后重试 |
-| PC 发文本到手机，手机没提醒 | 手机拒绝了通知权限；内容仍会记在 App 界面 |
-| `HOST_UNREACHABLE` | 目标服务器地址/端口不对，或手机当前网络到不了那台机器（手机需能上网且能访问该主机） |
-| `AUTH_FAILED` | 用户名/密码/私钥不对。**JSch 0.1.55 不支持新版 OpenSSH 私钥格式**（`-----BEGIN OPENSSH PRIVATE KEY-----`）与 ed25519 私钥，需要转成 PEM/PKCS#8：`ssh-keygen -p -m PEM -f id_rsa` |
-| `UNKNOWN_HOST` 弹窗 | 首次连接该主机的正常流程，核对指纹后选择信任 |
-| `HOST_KEY_CHANGED` | 目标服务器重装/换过主机密钥，或真有中间人；**先查清原因**再清除手机 known_hosts 重连 |
-| `Algorithm negotiation fail` | JSch 0.1.55 仅支持 `ssh-rsa(SHA-1)`、`ssh-dss`、`ecdsa-sha2-*` 主机密钥算法。若目标服务器只提供 ed25519 或已按 OpenSSH 8.8+ 默认禁用 ssh-rsa，就会协商失败。两条出路：① `app/build.gradle` 换成社区分支 `implementation 'com.github.mwiede:jsch:0.2.17'`（接口兼容，支持 rsa-sha2/ed25519）；② 目标服务器 `sshd_config` 加 `HostKeyAlgorithms +ssh-rsa`、`PubkeyAcceptedAlgorithms +ssh-rsa` 后重启 sshd |
-| 大文件传输时文本消息延迟 | 单连接内文件分块写入是同步的，属已知限制（不会丢，见 prd §8）；发大文件时避免同时聊天 |
+| `Refresh Devices` list is empty | USB debugging off / "Allow" not tapped on the phone / cable only charges and does not transfer data; run `adb devices` on the command line to check the state |
+| Shows `[adb unavailable]` | `adb` is not on PATH; specify an absolute path as described in "Prepare the PC side" |
+| The connection drops immediately and `BAD_TOKEN` appears in the message panel | Wrong Token, or the phone service was restarted (the Token is regenerated); use whatever the phone UI currently shows |
+| Port-in-use / forward failure | Port 12580 is taken, or a previous forward is lingering; disconnect and reconnect (a `--remove-all` runs before connecting) |
+| Tapping "Start service" on the phone does nothing | Notification permission / foreground service is restricted by the system; allow notifications in settings, or disable battery optimization and retry |
+| PC text to the phone gives no notification | The phone denied notification permission; the content is still recorded in the app UI |
+| `HOST_UNREACHABLE` | Wrong target server address/port, or the phone's current network cannot reach that machine (the phone needs internet access and must be able to reach the host) |
+| `AUTH_FAILED` | Wrong username/password/private key. **JSch 0.1.55 does not support the newer OpenSSH key format** (`-----BEGIN OPENSSH PRIVATE KEY-----`) or ed25519 keys; convert to PEM/PKCS#8: `ssh-keygen -p -m PEM -f id_rsa` |
+| `UNKNOWN_HOST` dialog | The normal flow for a first connection to that host; verify the fingerprint and then choose to trust |
+| `HOST_KEY_CHANGED` | The target server was reinstalled or its host key changed, or there really is a man-in-the-middle; **find out the cause first**, then clear the phone's known_hosts and reconnect |
+| `Algorithm negotiation fail` | JSch 0.1.55 supports only `ssh-rsa(SHA-1)`, `ssh-dss`, and `ecdsa-sha2-*` host key algorithms. If the target server offers only ed25519 or has ssh-rsa disabled per the OpenSSH 8.8+ default, negotiation fails. Two ways out: ① in `app/build.gradle` switch to the community fork `implementation 'com.github.mwiede:jsch:0.2.17'` (API-compatible, supports rsa-sha2/ed25519); ② add `HostKeyAlgorithms +ssh-rsa` and `PubkeyAcceptedAlgorithms +ssh-rsa` to the target server's `sshd_config` and restart sshd |
+| Text messages lag during large file transfers | Chunked file writes within a single connection are synchronous, a known limitation (nothing is lost; see prd §8); avoid chatting while sending large files |
 
 ---
 
-## 七、已知限制
+## 7. Known Limitations
 
-- 远程终端是**行模式**（输入整行 + 回车），适合执行命令；`vim`/`htop` 这类全屏交互程序尚不可用（缺按键直传与 ANSI 终端仿真）。
-- 不支持断点续传、多设备并行、目录浏览；PC 一次只连一台设备。
-- 连接内文件传输与文本共用一条 TCP，大文件期间文本有延迟。
-- 需 adb 环境（免 adb 方案需 root 或定制 ROM）。
+- The remote terminal is **line mode** (type a whole line + Enter), suitable for running commands; full-screen interactive programs such as `vim`/`htop` are not yet usable (no raw keystroke passthrough or ANSI terminal emulation).
+- No resume-after-interruption, no parallel multi-device support, no directory browsing; the PC connects to only one device at a time.
+- Within a connection, file transfer and text share one TCP stream, so text lags while a large file is in flight.
+- An adb environment is required (an adb-free approach would need root or a custom ROM).
 
-更多可扩展点与安全边界见 [prd.md](./prd.md) §7、§8。
+See [prd.md](./prd.md) §7 and §8 for more extensibility points and security boundaries.

@@ -38,7 +38,7 @@ def encode_frame(msg_type: int, header: dict, payload: bytes = b"") -> bytes:
 def decode_frame(read):
     """read(n) must return exactly n bytes, otherwise it raises an exception."""
     if read(2) != MAGIC:
-        raise IOError("协议 magic 错误")
+        raise IOError("protocol magic mismatch")
     msg_type, hlen = struct.unpack(">BH", read(3))   # type 1B + headerLen 2B
     header = json.loads(read(hlen).decode("utf-8")) if hlen else {}
     (plen,) = struct.unpack(">I", read(4))

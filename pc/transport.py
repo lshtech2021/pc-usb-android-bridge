@@ -40,7 +40,7 @@ class Transport:
         def read(n):
             data = f.read(n)
             if len(data) < n:
-                raise ConnectionError("对端关闭")
+                raise ConnectionError("peer closed")
             return data
 
         try:

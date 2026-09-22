@@ -29,14 +29,14 @@ class MainActivity : AppCompatActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
-        info.text = "准备发送: ${displayName(uri)}"
+        info.text = "Preparing to send: ${displayName(uri)}"
         Thread {
             runCatching { copyToCache(uri) }
                 .onSuccess {
                     BridgeService.broadcastFile(it, cleanup = true)
-                    runOnUiThread { info.text = "已发起发送: ${it.name}" }
+                    runOnUiThread { info.text = "Send started: ${it.name}" }
                 }
-                .onFailure { e -> runOnUiThread { info.text = "发送失败: ${e.message}" } }
+                .onFailure { e -> runOnUiThread { info.text = "Send failed: ${e.message}" } }
         }.start()
     }
 
@@ -50,14 +50,14 @@ class MainActivity : AppCompatActivity() {
         msgLog = TextView(this).apply {
             textSize = 15f
             setPadding(0, 8, 0, 8)
-            text = "（尚无消息）"
+            text = "(no messages yet)"
         }
-        val start = Button(this).apply { text = "启动 USB Bridge 服务" }
-        val sendText = Button(this).apply { text = "发送文本到 PC" }
-        val sendFile = Button(this).apply { text = "发送文件到 PC" }
-        input = EditText(this).apply { hint = "输入要发给 PC 的文本" }
+        val start = Button(this).apply { text = "Start USB Bridge service" }
+        val sendText = Button(this).apply { text = "Send text to PC" }
+        val sendFile = Button(this).apply { text = "Send file to PC" }
+        input = EditText(this).apply { hint = "Enter text to send to the PC" }
         val msgTitle = TextView(this).apply {
-            text = "收到的消息"
+            text = "Received messages"
             textSize = 16f
             setPadding(0, 24, 0, 4)
         }
@@ -73,7 +73,7 @@ class MainActivity : AppCompatActivity() {
         start.setOnClickListener {
             ContextCompat.startForegroundService(this, Intent(this, BridgeService::class.java))
             info.postDelayed({
-                info.text = "服务已启动，监听 127.0.0.1:${BridgeService.PORT}\nToken: ${BridgeService.token}"
+                info.text = "Service started, listening on 127.0.0.1:${BridgeService.PORT}\nToken: ${BridgeService.token}"
             }, 300)
         }
         sendText.setOnClickListener {
@@ -81,8 +81,8 @@ class MainActivity : AppCompatActivity() {
             if (t.isNotEmpty()) {
                 BridgeService.broadcastText(t)
                 input.text.clear()
-                info.text = "已发送: $t"
-                appendMsg("[我] $t")
+                info.text = "Sent: $t"
+                appendMsg("[Me] $t")
             }
         }
         sendFile.setOnClickListener { pickFile.launch("*/*") }
@@ -115,7 +115,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun appendMsg(line: String) {
         val cur = msgLog.text?.toString().orEmpty()
-        msgLog.text = if (cur == "（尚无消息）" || cur.isEmpty()) line else "$cur\n$line"
+        msgLog.text = if (cur == "(no messages yet)" || cur.isEmpty()) line else "$cur\n$line"
     }
 
     private fun displayName(uri: Uri): String =

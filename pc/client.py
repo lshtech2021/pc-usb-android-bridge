@@ -72,7 +72,7 @@ class PhoneClient:
 
     def _on_disconnect(self):
         self._cleanup_partial()
-        self.on_status and self.on_status("[连接已断开]")
+        self.on_status and self.on_status("[Connection closed]")
 
     # ---------- Feature 2: text messages (bidirectional) ----------
     def send_text(self, text: str):
@@ -178,6 +178,6 @@ class PhoneClient:
                     self.on_remote_error(h["channel"], h.get("code", ""), h)
                 else:
                     self.on_status and self.on_status(
-                        f"[错误] {h.get('code', '')} {h.get('message', '')}")
+                        f"[Error] {h.get('code', '')} {h.get('message', '')}")
         except Exception as e:
-            self.on_status and self.on_status(f"[处理异常] {e}")
+            self.on_status and self.on_status(f"[Handler exception] {e}")

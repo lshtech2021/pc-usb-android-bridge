@@ -40,7 +40,7 @@ class BridgeService : Service() {
         super.onCreate()
         if (token.isEmpty()) token = randomToken()
         ensureChannels(this)
-        val n = buildNotification(this, "USB Bridge 运行中 (127.0.0.1:$PORT)", "Token: $token",
+        val n = buildNotification(this, "USB Bridge running (127.0.0.1:$PORT)", "Token: $token",
             ongoing = true, channelId = CHANNEL_SERVICE)
         if (Build.VERSION.SDK_INT >= 29) {
             ServiceCompat.startForeground(this, NOTIF_SERVICE, n,
@@ -147,7 +147,7 @@ class BridgeService : Service() {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL_SERVICE, "USB Bridge", NotificationManager.IMPORTANCE_LOW))
             nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_MESSAGE, "PC 消息", NotificationManager.IMPORTANCE_DEFAULT))
+                NotificationChannel(CHANNEL_MESSAGE, "PC messages", NotificationManager.IMPORTANCE_DEFAULT))
         }
 
         fun buildNotification(
@@ -220,7 +220,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                     authed = true
                     send(FrameIO.ACK, JSONObject().put("ok", true).put("device", Build.MODEL))
                 } else {
-                    send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token 校验失败"))
+                    send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token verification failed"))
                     close()
                 }
                 return
@@ -363,7 +363,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
             nm.notify(
                 BridgeService.nextMessageNotificationId(),
                 BridgeService.buildNotification(
-                    ctx, "来自 PC 的消息", text,
+                    ctx, "Message from PC", text,
                     ongoing = false, channelId = BridgeService.CHANNEL_MESSAGE))
         }.onFailure { it.printStackTrace() }
     }
