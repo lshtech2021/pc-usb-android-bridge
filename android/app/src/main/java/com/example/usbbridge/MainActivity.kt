@@ -33,8 +33,10 @@ class MainActivity : AppCompatActivity() {
         Thread {
             runCatching { copyToCache(uri) }
                 .onSuccess {
-                    BridgeService.broadcastFile(it, cleanup = true)
-                    runOnUiThread { info.text = "Send started: ${it.name}" }
+                    val ok = BridgeService.broadcastFile(it, cleanup = true)
+                    runOnUiThread {
+                        info.text = if (ok) "Send started: ${it.name}" else "Send failed: PC not connected"
+                    }
                 }
                 .onFailure { e -> runOnUiThread { info.text = "Send failed: ${e.message}" } }
         }.start()
@@ -79,10 +81,13 @@ class MainActivity : AppCompatActivity() {
         sendText.setOnClickListener {
             val t = input.text.toString().trim()
             if (t.isNotEmpty()) {
-                BridgeService.broadcastText(t)
-                input.text.clear()
-                info.text = "Sent: $t"
-                appendMsg("[Me] $t")
+                if (BridgeService.broadcastText(t)) {
+                    input.text.clear()
+                    info.text = "Sent: $t"
+                    appendMsg("[Me] $t")
+                } else {
+                    info.text = "Send failed: PC not connected"
+                }
             }
         }
         sendFile.setOnClickListener { pickFile.launch("*/*") }

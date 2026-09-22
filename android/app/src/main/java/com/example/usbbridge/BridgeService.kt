@@ -38,7 +38,7 @@ class BridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        if (token.isEmpty()) token = randomToken()
+        token = randomToken()                  // §7: regenerate on every service start
         ensureChannels(this)
         val n = buildNotification(this, "USB Bridge running (127.0.0.1:$PORT)", "Token: $token",
             ongoing = true, channelId = CHANNEL_SERVICE)
@@ -68,6 +68,8 @@ class BridgeService : Service() {
                 if (running) e.printStackTrace()
             } finally {
                 running = false
+                runCatching { server?.close() }
+                server = null
             }
         }.start()
         return START_STICKY
@@ -86,8 +88,10 @@ class BridgeService : Service() {
         const val CHANNEL_SERVICE = "usb_bridge"
         const val CHANNEL_MESSAGE = "usb_bridge_msg"
         const val NOTIF_SERVICE = 1
+        const val MAX_FILE_SIZE = 2L * 1024 * 1024 * 1024   // 2GB NFR
         private const val NOTIF_MSG_BASE = 1000
         private const val MAX_RECENT = 50
+        const val PING_INTERVAL_MS = 15_000L
 
         @Volatile var token: String = ""
             private set
@@ -115,11 +119,22 @@ class BridgeService : Service() {
         fun addSession(s: SessionHandler) { sessions.add(s) }
         fun removeSession(s: SessionHandler) { sessions.remove(s) }
 
-        /** Phone-side text/file send: reuse the already-established connection (the PC side already has receive logic) */
-        fun broadcastText(text: String) = sessions.forEach { it.sendText(text) }
+        /** Phone-side text/file send: reuse the already-established connection. Returns false if no session. */
+        fun broadcastText(text: String): Boolean {
+            if (sessions.isEmpty()) return false
+            sessions.forEach { it.sendText(text) }
+            return true
+        }
 
-        fun broadcastFile(file: File, cleanup: Boolean = false) =
-            sessions.forEach { it.sendFile(file, cleanup) }
+        fun broadcastFile(file: File, cleanup: Boolean = false): Boolean {
+            val target = sessions.firstOrNull()
+            if (target == null) {
+                if (cleanup) runCatching { file.delete() }
+                return false
+            }
+            target.sendFile(file, cleanup)
+            return true
+        }
 
         /** UI subscribes to PC -> phone text; the callback always runs on the main thread. Returns the currently cached recent messages. */
         fun addTextListener(listener: (String) -> Unit): List<String> {
@@ -191,6 +206,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
     @Volatile private var closed = false
     @Volatile private var authed = false
+    private var pingThread: Thread? = null
 
     override fun run() {
         try {
@@ -212,6 +228,23 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         }
     }
 
+    private fun startPingLoop() {
+        pingThread = Thread({
+            while (!closed) {
+                try {
+                    Thread.sleep(BridgeService.PING_INTERVAL_MS)
+                } catch (_: InterruptedException) {
+                    return@Thread
+                }
+                if (closed) break
+                runCatching { send(FrameIO.PING, JSONObject()) }
+            }
+        }, "bridge-ping").apply { isDaemon = true; start() }
+    }
+
+    private fun JSONObject.optNullableString(key: String): String? =
+        if (has(key) && !isNull(key)) optString(key) else null
+
     private fun handle(f: FrameIO.Frame) {
         with(f.header) {
             // The first frame must be a HELLO with the correct token, otherwise reject
@@ -219,6 +252,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                 if (f.type == FrameIO.HELLO && optString("token") == BridgeService.token) {
                     authed = true
                     send(FrameIO.ACK, JSONObject().put("ok", true).put("device", Build.MODEL))
+                    startPingLoop()
                 } else {
                     send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token verification failed"))
                     close()
@@ -227,6 +261,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
             }
             when (f.type) {
                 FrameIO.PING -> send(FrameIO.PONG, JSONObject())
+                FrameIO.PONG -> {}                             // peer keepalive reply
 
                 FrameIO.TEXT -> {                                      // PC -> phone text
                     notifyText(ctx, optString("text"))
@@ -235,19 +270,35 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
                 FrameIO.FILE_META -> {
                     val id = optInt("id")
+                    val size = optLong("size")
+                    if (size > BridgeService.MAX_FILE_SIZE) {
+                        send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
+                            .put("id", id).put("message", "file exceeds 2GB limit"))
+                    } else {
+                        try {
+                            sinks[id] = FileSink.create(ctx, f.header)
+                        } catch (e: Exception) {                           // Disk full / no permission, etc.
+                            send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
+                                .put("id", id).put("message", e.message ?: ""))
+                        }
+                    }
+                }
+
+                FrameIO.FILE_CHUNK -> {
+                    val id = optInt("id")
                     try {
-                        sinks[id] = FileSink.create(ctx, f.header)
-                    } catch (e: Exception) {                           // Disk full / no permission, etc.
+                        sinks[id]?.append(f.payload)
+                    } catch (e: Exception) {
+                        sinks.remove(id)?.abort()
                         send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
                             .put("id", id).put("message", e.message ?: ""))
                     }
                 }
 
-                FrameIO.FILE_CHUNK -> sinks[optInt("id")]?.append(f.payload)
-
                 FrameIO.FILE_END -> {
                     val id = optInt("id")
-                    val path = sinks.remove(id)?.finish(optBoolean("ok"), optString("sha256"))
+                    val sha = optNullableString("sha256")
+                    val path = sinks.remove(id)?.finish(optBoolean("ok"), sha)
                     send(FrameIO.ACK, JSONObject()
                         .put("file_id", id).put("ok", path != null).put("path", path ?: ""))
                 }
@@ -282,6 +333,9 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         BridgeService.poolExecute {
             val id = FrameIO.nextId()
             runCatching {
+                if (file.length() > BridgeService.MAX_FILE_SIZE) {
+                    error("file exceeds 2GB limit")
+                }
                 val md = MessageDigest.getInstance("SHA-256")
                 send(FrameIO.FILE_META, JSONObject()
                     .put("id", id).put("name", file.name).put("size", file.length()))
@@ -308,12 +362,11 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     private fun openRemote(f: FrameIO.Frame) = with(f.header) {
         val ch = optInt("channel")
         val host = optString("host")
-        val trust = if (has("trust_fingerprint") && !isNull("trust_fingerprint"))
-            optString("trust_fingerprint") else null
+        val trust = optNullableString("trust_fingerprint")
         val auth = RemoteSession.Auth(
-            password = if (has("password")) optString("password") else null,
-            privateKey = if (has("private_key")) optString("private_key") else null,
-            passphrase = if (has("passphrase")) optString("passphrase") else null)
+            password = optNullableString("password"),
+            privateKey = optNullableString("private_key"),
+            passphrase = optNullableString("passphrase"))
         val hostKeys = TofuHostKeys(File(ctx.filesDir, "known_hosts"), trust)
         val rs = RemoteSession(hostKeys,
             { stream, data ->
@@ -371,6 +424,8 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     override fun close() {
         if (closed) return
         closed = true
+        pingThread?.interrupt()
+        pingThread = null
         remoteOps.shutdownNow()
         remotes.values.forEach { it.close() }
         sinks.values.forEach { it.abort() }

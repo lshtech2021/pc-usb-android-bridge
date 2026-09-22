@@ -30,7 +30,9 @@ class ErrCode:
 
 
 def encode_frame(msg_type: int, header: dict, payload: bytes = b"") -> bytes:
-    h = json.dumps(header, ensure_ascii=False).encode("utf-8")
+    # Omit None values — Android JSONObject.optString turns JSON null into the string "null"
+    clean = {k: v for k, v in header.items() if v is not None}
+    h = json.dumps(clean, ensure_ascii=False).encode("utf-8")
     return (MAGIC + struct.pack(">BH", msg_type, len(h))
             + h + struct.pack(">I", len(payload)) + payload)
 

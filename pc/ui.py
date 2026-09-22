@@ -20,6 +20,7 @@ PC_PORT, PHONE_PORT = 12580, 9999
 class MainWindow(QMainWindow):
     sig_text = pyqtSignal(str)
     sig_status = pyqtSignal(str)
+    sig_hello = pyqtSignal(object)
     sig_fprog = pyqtSignal(object, str, int, int, str)
     sig_fdone = pyqtSignal(object, str, bool, str, str)
     sig_rout = pyqtSignal(object, str, object)
@@ -36,13 +37,14 @@ class MainWindow(QMainWindow):
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
-        c.on_hello_ack = lambda i: self.sig_status.emit(f"[Phone connected: {i.get('device','?')}]")
+        c.on_hello_ack = self.sig_hello.emit
         c.on_file_progress = lambda *a: self.sig_fprog.emit(*a)
         c.on_file_done = lambda *a: self.sig_fdone.emit(*a)
         c.on_remote_output = lambda *a: self.sig_rout.emit(*a)
         c.on_remote_close = lambda *a: self.sig_rclose.emit(*a)
         c.on_remote_error = lambda *a: self.sig_rerr.emit(*a)
         for s, slot in ((self.sig_text, self._on_text), (self.sig_status, self._on_status),
+                        (self.sig_hello, self._hello_ack),
                         (self.sig_fprog, self._on_fprog), (self.sig_fdone, self._on_fdone),
                         (self.sig_rout, self._on_rout), (self.sig_rclose, self._on_rclose),
                         (self.sig_rerr, self._on_rerr)):
@@ -96,6 +98,16 @@ class MainWindow(QMainWindow):
 
     def _on_status(self, s):
         self.msg_view.appendPlainText(s)
+        # Keep top label honest after drop / bad token / heartbeat timeout
+        low = s.lower()
+        if "[connection closed]" in low or "bad_token" in low:
+            self.lbl.setText("Not connected")
+            self.ch = None
+
+    def _hello_ack(self, info):
+        serial = self.cmb.currentData() or "?"
+        self.lbl.setText("Connected " + str(serial))
+        self.msg_view.appendPlainText(f"[Phone connected: {info.get('device', '?')}]")
 
     # ---- Tab2 Files (one row per fid, supports concurrent transfers) ----
     def _file_tab(self):
@@ -110,6 +122,8 @@ class MainWindow(QMainWindow):
         return w
 
     def pick_send(self):
+        if not (self.client.tp and self.client.tp.alive):
+            return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
         path, _ = QFileDialog.getOpenFileName(self, "Choose File")
         if path:
             self.client.send_file(path)
@@ -227,7 +241,10 @@ class MainWindow(QMainWindow):
             self.client.remote_input(self.ch, (line + "\n").encode())  # Line mode, suitable for running commands
 
     def _on_rout(self, ch, stream, data):
-        self.term.insertPlainText(bytes(data).decode("utf-8", "ignore"))
+        text = bytes(data).decode("utf-8", "ignore")
+        if stream == "err":
+            text = "[err] " + text
+        self.term.insertPlainText(text)
         self.term.moveCursor(QTextCursor.End)
 
     def _on_rclose(self, ch, code, reason):
@@ -275,9 +292,11 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Notice", "Please refresh and select a device first (USB debugging must be enabled and authorized)")
         try:
             self.adb.forward(serial, PC_PORT, PHONE_PORT)
+            self.lbl.setText("Connecting...")
             self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text().strip())
-            self.lbl.setText("Connected " + serial)
+            # lbl becomes Connected only after HELLO ACK (_hello_ack)
         except Exception as e:
+            self.lbl.setText("Not connected")
             QMessageBox.critical(self, "Connection failed", str(e))
 
     def disconnect_phone(self):

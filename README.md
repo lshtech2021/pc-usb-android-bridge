@@ -89,7 +89,7 @@ self.adb, self.client, self.ch = Adb(path=r"D:\platform-tools\adb.exe"), PhoneCl
 adb devices          # Only "<serial>   device" means it is connectable (unauthorized means you have not tapped Allow on the phone yet)
 ```
 
-4. Run `py ui.py` on the PC → tap "**Refresh Devices**" and select the phone → enter the **Token** shown on the phone → tap "**Connect**". The top status changes to `Connected <serial>` and the message panel shows `[Phone connected: <model>]`.
+4. Run `py ui.py` on the PC → tap "**Refresh Devices**" and select the phone → enter the **Token** shown on the phone → tap "**Connect**". After HELLO succeeds, the top status becomes `Connected <serial>` and the message panel shows `[Phone connected: <model>]`.
 
 > On connect, the PC automatically runs `adb -s <serial> forward tcp:12580 tcp:9999` (after `--remove-all` to clear leftovers), mapping the PC's `127.0.0.1:12580` to the phone service's `127.0.0.1:9999`. Link encryption is provided by USB + adb; the protocol itself adds no extra encryption.
 
@@ -123,7 +123,7 @@ You can cross-check the fingerprint on the target server with `ssh-keygen -lf /e
 
 ### Disconnecting and Exiting
 
-- Tapping "**Disconnect**" on the PC closes the connection and removes the `adb forward`; files the PC had not finished sending are deleted.
+- Tapping "**Disconnect**" on the PC closes the connection and removes the `adb forward`; half-written files the PC was **receiving** under `./downloads/` are deleted (phone-side incomplete sinks are aborted too).
 - Swiping the app away or stopping the service on the phone releases the listening port.
 - There is no automatic reconnect; tap "Connect" again when needed.
 
