@@ -134,7 +134,7 @@ You can cross-check the fingerprint on the target server with `ssh-keygen -lf /e
 | Content | Location |
 |---|---|
 | Files the PC received from the phone | `<directory where ui.py was started>/downloads/` |
-| Files the PC sends to the phone | `Android/data/com.example.usbbridge/files/` (app external private dir, no storage permission needed) |
+| Files the PC sends to the phone | User-chosen folder via **Choose save folder** (persisted SAF access), or app default `Android/data/com.example.usbbridge/files/` |
 | Text received by the phone | Notification bar + in-app UI notice |
 | Phone known_hosts (host fingerprints) | `/data/data/com.example.usbbridge/files/known_hosts` (not visible without root; clearing app data resets it) |
 | SSH passwords / private-key contents | Passed through memory only, never written to disk |

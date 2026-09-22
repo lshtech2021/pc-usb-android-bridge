@@ -12,8 +12,10 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.documentfile.provider.DocumentFile
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSchException
 import org.json.JSONObject
@@ -438,9 +440,12 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 }
 
-/** Write file to disk (app external private dir, no storage permission needed); with SHA256 verification and the name(1).ext duplicate-name rule */
-class FileSink private constructor(private val file: File) {
-    private val fos = file.outputStream()
+/** Write received files to the user-chosen folder (SAF) or the app private dir; SHA256 + name(1).ext. */
+class FileSink private constructor(
+    private val fos: OutputStream,
+    private val displayPath: String,
+    private val deleteOnFail: () -> Unit
+) {
     private val md = MessageDigest.getInstance("SHA-256")
 
     fun append(chunk: ByteArray) = synchronized(fos) {
@@ -453,13 +458,13 @@ class FileSink private constructor(private val file: File) {
         val actual = md.digest().joinToString("") { "%02x".format(it) }
         val good = ok && (sha256.isNullOrEmpty() || sha256 == actual)
         if (!good) {
-            file.delete(); null
-        } else file.absolutePath
+            deleteOnFail(); null
+        } else displayPath
     }
 
     fun abort() {
         runCatching { fos.close() }
-        runCatching { file.delete() }
+        runCatching { deleteOnFail() }
     }
 
     companion object {
@@ -481,7 +486,48 @@ class FileSink private constructor(private val file: File) {
             return f
         }
 
-        fun create(ctx: Context, h: JSONObject): FileSink =
-            FileSink(uniqueName(createDir(ctx), h.optString("name", "file_${h.optInt("id")}")))
+        private fun uniqueDocument(tree: DocumentFile, name: String): DocumentFile {
+            val safe = File(name).name
+            val mime = mimeFor(safe)
+            if (tree.findFile(safe) == null) {
+                return tree.createFile(mime, safe)
+                    ?: error("cannot create file in chosen folder")
+            }
+            val dot = safe.lastIndexOf('.')
+            val stem = if (dot > 0) safe.substring(0, dot) else safe
+            val ext = if (dot > 0) safe.substring(dot) else ""
+            var i = 1
+            while (true) {
+                val candidate = "$stem($i)$ext"
+                if (tree.findFile(candidate) == null) {
+                    return tree.createFile(mime, candidate)
+                        ?: error("cannot create file in chosen folder")
+                }
+                i++
+            }
+        }
+
+        private fun mimeFor(name: String): String {
+            val ext = name.substringAfterLast('.', "").lowercase()
+            if (ext.isEmpty()) return "application/octet-stream"
+            return MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+                ?: "application/octet-stream"
+        }
+
+        fun create(ctx: Context, h: JSONObject): FileSink {
+            val name = h.optString("name", "file_${h.optInt("id")}")
+            val treeUri = ReceiveDirPrefs.getTreeUri(ctx)
+            if (treeUri != null) {
+                val tree = DocumentFile.fromTreeUri(ctx, treeUri)
+                    ?: error("chosen save folder is no longer available")
+                if (!tree.canWrite()) error("chosen save folder is not writable")
+                val doc = uniqueDocument(tree, name)
+                val os = ctx.contentResolver.openOutputStream(doc.uri)
+                    ?: error("cannot open output stream for ${doc.name}")
+                return FileSink(os, doc.uri.toString()) { runCatching { doc.delete() } }
+            }
+            val file = uniqueName(createDir(ctx), name)
+            return FileSink(file.outputStream(), file.absolutePath) { runCatching { file.delete() } }
+        }
     }
 }
