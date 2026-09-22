@@ -326,8 +326,12 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 
     // ---------- Feature 1/2: phone -> PC text and files ----------
-    fun sendText(text: String) =
-        send(FrameIO.TEXT, JSONObject().put("id", FrameIO.nextId()).put("text", text))
+    fun sendText(text: String) {
+        // Must not run on the UI thread (StrictMode NetworkOnMainThreadException)
+        BridgeService.poolExecute {
+            send(FrameIO.TEXT, JSONObject().put("id", FrameIO.nextId()).put("text", text))
+        }
+    }
 
     fun sendFile(file: File, cleanup: Boolean = false) {
         BridgeService.poolExecute {
