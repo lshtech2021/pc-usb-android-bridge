@@ -29,16 +29,18 @@ class MainActivity : AppCompatActivity() {
     private val notifPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
     private val pickFile = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@registerForActivityResult
-        info.text = "Preparing to send: ${displayName(uri)}"
+        appendMsg("Preparing to send: ${displayName(uri)}")
         Thread {
             runCatching { copyToCache(uri) }
                 .onSuccess {
                     val ok = BridgeService.broadcastFile(it, cleanup = true)
                     runOnUiThread {
-                        info.text = if (ok) "Send started: ${it.name}" else "Send failed: PC not connected"
+                        appendMsg(
+                            if (ok) "Send started: ${it.name}"
+                            else "Send failed: PC not connected")
                     }
                 }
-                .onFailure { e -> runOnUiThread { info.text = "Send failed: ${e.message}" } }
+                .onFailure { e -> runOnUiThread { appendMsg("Send failed: ${e.message}") } }
         }.start()
     }
 
@@ -83,10 +85,9 @@ class MainActivity : AppCompatActivity() {
             if (t.isNotEmpty()) {
                 if (BridgeService.broadcastText(t)) {
                     input.text.clear()
-                    info.text = "Sent: $t"
                     appendMsg("[Me] $t")
                 } else {
-                    info.text = "Send failed: PC not connected"
+                    appendMsg("Send failed: PC not connected")
                 }
             }
         }
