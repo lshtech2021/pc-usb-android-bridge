@@ -112,11 +112,11 @@ class BridgeService : Service() {
             if (Build.VERSION.SDK_INT >= 26)
                 Notification.Builder(ctx, CHANNEL_ID)
                     .setContentTitle(title).setContentText(text)
-                    .setSmallIcon(android.R.drawable.ic_menu_computer).build()
+                    .setSmallIcon(android.R.drawable.ic_menu_info_details).build()
             else @Suppress("DEPRECATION")
                 Notification.Builder(ctx)
                     .setContentTitle(title).setContentText(text)
-                    .setSmallIcon(android.R.drawable.ic_menu_computer).build()
+                    .setSmallIcon(android.R.drawable.ic_menu_info_details).build()
     }
 }
 
@@ -153,57 +153,60 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         }
     }
 
-    private fun handle(f: FrameIO.Frame) = with(f.header) {
-        // 首个帧必须是带正确 token 的 HELLO，否则拒绝
-        if (!authed) {
-            if (f.type == FrameIO.HELLO && optString("token") == BridgeService.token) {
-                authed = true
-                send(FrameIO.ACK, JSONObject().put("ok", true).put("device", Build.MODEL))
-            } else {
-                send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token 校验失败"))
-                close()
-            }
-            return
-        }
-        when (f.type) {
-            FrameIO.PING -> send(FrameIO.PONG, JSONObject())
-
-            FrameIO.TEXT -> {                                      // PC → 手机 文本
-                notifyText(ctx, optString("text"))
-                send(FrameIO.ACK, JSONObject().put("id", optInt("id")))
-            }
-
-            FrameIO.FILE_META -> {
-                val id = optInt("id")
-                try {
-                    sinks[id] = FileSink.create(ctx, f.header)
-                } catch (e: Exception) {                           // 磁盘满 / 无权限等
-                    send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
-                        .put("id", id).put("message", e.message ?: ""))
+    private fun handle(f: FrameIO.Frame) {
+        with(f.header) {
+            // 首个帧必须是带正确 token 的 HELLO，否则拒绝
+            if (!authed) {
+                if (f.type == FrameIO.HELLO && optString("token") == BridgeService.token) {
+                    authed = true
+                    send(FrameIO.ACK, JSONObject().put("ok", true).put("device", Build.MODEL))
+                } else {
+                    send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token 校验失败"))
+                    close()
                 }
+                return
             }
+            when (f.type) {
+                FrameIO.PING -> send(FrameIO.PONG, JSONObject())
 
-            FrameIO.FILE_CHUNK -> sinks[optInt("id")]?.append(f.payload)
+                FrameIO.TEXT -> {                                      // PC → 手机 文本
+                    notifyText(ctx, optString("text"))
+                    send(FrameIO.ACK, JSONObject().put("id", optInt("id")))
+                }
 
-            FrameIO.FILE_END -> {
-                val id = optInt("id")
-                val path = sinks.remove(id)?.finish(optBoolean("ok"), optString("sha256"))
-                send(FrameIO.ACK, JSONObject()
-                    .put("file_id", id).put("ok", path != null).put("path", path ?: ""))
-            }
+                FrameIO.FILE_META -> {
+                    val id = optInt("id")
+                    try {
+                        sinks[id] = FileSink.create(ctx, f.header)
+                    } catch (e: Exception) {                           // 磁盘满 / 无权限等
+                        send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
+                            .put("id", id).put("message", e.message ?: ""))
+                    }
+                }
 
-            FrameIO.REMOTE_OPEN -> {
-                val fr = f; post { openRemote(fr) }
-            }
+                FrameIO.FILE_CHUNK -> sinks[optInt("id")]?.append(f.payload)
 
-            FrameIO.REMOTE_DATA -> {
-                val d = f.payload; val c = optInt("channel")
-                post { runCatching { remotes[c]?.writeStdin(d) } }
-            }
+                FrameIO.FILE_END -> {
+                    val id = optInt("id")
+                    val path = sinks.remove(id)?.finish(optBoolean("ok"), optString("sha256"))
+                    send(FrameIO.ACK, JSONObject()
+                        .put("file_id", id).put("ok", path != null).put("path", path ?: ""))
+                }
 
-            FrameIO.REMOTE_CLOSE -> {
-                val c = optInt("channel")
-                post { runCatching { remotes.remove(c)?.close() } }
+                FrameIO.REMOTE_OPEN -> {
+                    val fr = f; post { openRemote(fr) }
+                }
+
+                FrameIO.REMOTE_DATA -> {
+                    val d = f.payload; val c = optInt("channel")
+                    post { runCatching { remotes[c]?.writeStdin(d) } }
+                }
+
+                FrameIO.REMOTE_CLOSE -> {
+                    val c = optInt("channel")
+                    post { runCatching { remotes.remove(c)?.close() } }
+                }
+                else -> {}
             }
         }
     }

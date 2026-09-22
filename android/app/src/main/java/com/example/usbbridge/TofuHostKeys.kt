@@ -23,7 +23,7 @@ class TofuHostKeys(
 
     @Volatile var lastHost: String? = null; private set
     @Volatile var lastFingerprint: String? = null; private set
-    @Volatile var lastResult: Int = OK; private set
+    @Volatile var lastResult: Int = HostKeyRepository.OK; private set
 
     init {
         if (store.exists()) {
@@ -39,10 +39,10 @@ class TofuHostKeys(
         lastHost = host; lastFingerprint = fp
         val recorded = known[host]
         lastResult = when {
-            recorded == null && approvedFingerprint == fp -> { trust(host, fp); OK }
-            recorded == null -> NOT_INCLUDED                    // 未知主机：交 PC 端确认
-            recorded == fp -> OK
-            else -> CHANGED                                     // 指纹变更：拒绝
+            recorded == null && approvedFingerprint == fp -> { trust(host, fp); HostKeyRepository.OK }
+            recorded == null -> HostKeyRepository.NOT_INCLUDED                    // 未知主机：交 PC 端确认
+            recorded == fp -> HostKeyRepository.OK
+            else -> HostKeyRepository.CHANGED                                     // 指纹变更：拒绝
         }
         return lastResult
     }
