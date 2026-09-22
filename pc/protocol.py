@@ -1,8 +1,8 @@
-"""自定义应用层协议：帧编解码与消息/错误码常量。
+"""Custom application-layer protocol: frame encode/decode and message/error code constants.
 
-帧格式（大端）：
+Frame format (big-endian):
     magic(2) | type(1) | headerLen(2) | header(JSON,UTF-8) | payloadLen(4) | payload
-总长度 = 9 + headerLen + payloadLen，字段顺序必须与 Android 端 FrameIO.kt 严格一致。
+Total length = 9 + headerLen + payloadLen; field order must match Android-side FrameIO.kt exactly.
 """
 import json
 import struct
@@ -36,7 +36,7 @@ def encode_frame(msg_type: int, header: dict, payload: bytes = b"") -> bytes:
 
 
 def decode_frame(read):
-    """read(n) 必须返回恰好 n 字节，否则抛异常。"""
+    """read(n) must return exactly n bytes, otherwise it raises an exception."""
     if read(2) != MAGIC:
         raise IOError("协议 magic 错误")
     msg_type, hlen = struct.unpack(">BH", read(3))   # type 1B + headerLen 2B

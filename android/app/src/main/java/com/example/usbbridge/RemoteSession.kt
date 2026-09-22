@@ -10,9 +10,9 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 
 /**
- * JSch SSH 代理（功能3核心）：手机作为跳板去连远程服务器，输出经 REMOTE_OUTPUT 回传 PC。
+ * JSch SSH proxy (core of feature 3): the phone acts as a jump host to reach a remote server, and output is sent back to the PC via REMOTE_OUTPUT.
  *
- * @param hostKeys TOFU 主机指纹库（决定是否放行本次连接）
+ * @param hostKeys TOFU host fingerprint store (decides whether to allow this connection)
  */
 class RemoteSession(
     private val hostKeys: TofuHostKeys,
@@ -22,16 +22,16 @@ class RemoteSession(
     private var session: Session? = null
     private var channel: Channel? = null
     private val stdin = PipedOutputStream()
-    private val stdinPipe = PipedInputStream(stdin, 1 shl 20)   // 1MB，降低被背压阻塞的概率
+    private val stdinPipe = PipedInputStream(stdin, 1 shl 20)   // 1MB, reduces the chance of blocking on backpressure
 
     data class Auth(val password: String?, val privateKey: String?, val passphrase: String?)
 
-    /** 交互式 shell：PC 的 REMOTE_DATA 写入 stdin，远端输出经 onOutput 回传 */
+    /** Interactive shell: PC's REMOTE_DATA is written to stdin, remote output is sent back via onOutput */
     fun openSsh(host: String, port: Int, user: String, auth: Auth) = connect(host, port, user, auth) {
         val ch = session!!.openChannel("shell") as ChannelShell
         ch.setPty(true)
-        ch.setPtySize(120, 30, 0, 0)                          // 与 PC 终端宽度匹配，避免全屏程序换行错乱
-        runCatching { ch.setEnv("TERM", "xterm-256color") }   // 远端未开 AcceptEnv 时会被忽略
+        ch.setPtySize(120, 30, 0, 0)                          // Match the PC terminal width to avoid garbled line wrapping in full-screen programs
+        runCatching { ch.setEnv("TERM", "xterm-256color") }   // Ignored when AcceptEnv is not enabled on the remote
         ch.setInputStream(stdinPipe)
         ch.setOutputStream(fwdStream("out"))
         ch.connect(10_000)
@@ -39,7 +39,7 @@ class RemoteSession(
         watchClose(ch) { onClose(0, "shell 已退出") }
     }
 
-    /** 一次性命令执行（kind=exec）：支持 stdin，结束回传退出码 */
+    /** One-shot command execution (kind=exec): supports stdin, returns the exit code on completion */
     fun execSsh(host: String, port: Int, user: String, auth: Auth, command: String) =
         connect(host, port, user, auth) {
             val ch = session!!.openChannel("exec") as ChannelExec
@@ -54,20 +54,20 @@ class RemoteSession(
 
     private fun connect(host: String, port: Int, user: String, auth: Auth, block: () -> Unit) {
         val jsch = JSch()
-        if (!auth.privateKey.isNullOrBlank()) {               // 私钥内容只存在内存中
+        if (!auth.privateKey.isNullOrBlank()) {               // Private-key contents exist only in memory
             jsch.addIdentity("bridge", auth.privateKey.toByteArray(Charsets.UTF_8), null,
                 auth.passphrase?.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8))
         }
         val s = jsch.getSession(user, host, port)
         auth.password?.takeIf { it.isNotEmpty() }?.let { s.setPassword(it) }
-        s.setConfig("StrictHostKeyChecking", "yes")           // 是否放行由 TofuHostKeys 决定
+        s.setConfig("StrictHostKeyChecking", "yes")           // Whether to allow is decided by TofuHostKeys
         s.setHostKeyRepository(hostKeys)
         s.connect(10_000)
         session = s
         block()
     }
 
-    /** 在独立线程等待通道结束，避免占用调用线程（remoteOps 单线程队列） */
+    /** Wait for the channel to end on a dedicated thread to avoid occupying the calling thread (remoteOps single-threaded queue) */
     private fun watchClose(ch: Channel, done: () -> Unit) = Thread {
         while (ch.isConnected) {
             try { Thread.sleep(200) } catch (_: InterruptedException) { return@Thread }

@@ -6,9 +6,9 @@ import java.io.InputStream
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 协议镜像实现，字段顺序必须与 PC 端 protocol.py 严格一致：
+ * Protocol mirror implementation; field order must match PC-side protocol.py exactly:
  *   magic(2) | type(1) | headerLen(2) | header(JSON,UTF-8) | payloadLen(4) | payload
- * 总长度 = 9 + headerLen + payloadLen
+ * Total length = 9 + headerLen + payloadLen
  */
 object FrameIO {
     const val HELLO = 0x00; const val TEXT = 0x01
@@ -17,7 +17,7 @@ object FrameIO {
     const val REMOTE_OUTPUT = 0x12; const val REMOTE_CLOSE = 0x13
     const val ACK = 0x20; const val ERROR = 0x21; const val PING = 0x30; const val PONG = 0x31
 
-    /** 手机侧 id 空间从 0x40000000 起，避免与 PC 侧(1 起)撞号 */
+    /** Phone-side id space starts at 0x40000000 to avoid colliding with the PC side (starting at 1) */
     private val idSeq = AtomicInteger(0x40000000)
     fun nextId(): Int = idSeq.getAndIncrement()
 
@@ -31,14 +31,14 @@ object FrameIO {
             fun u2(v: Int) { u1(v shr 8); u1(v) }
             fun u4(v: Int) { u2(v shr 16); u2(v) }
             u1(0xAB); u1(0xCD); u1(type); u2(h.size)
-            h.copyInto(this, i); i += h.size          // 必须写在游标 i 处，不能写死偏移
+            h.copyInto(this, i); i += h.size          // Must write at cursor i, not a hardcoded offset
             u4(payload.size); payload.copyInto(this, i)
         }
     }
 
     fun readFrame(input: InputStream): Frame? {
         val magic = ByteArray(2)
-        if (!fill(input, magic)) return null                       // 对端正常关闭
+        if (!fill(input, magic)) return null                       // Peer closed cleanly
         if (magic[0] != 0xAB.toByte() || magic[1] != 0xCD.toByte()) throw IOException("bad magic")
         val type = readByte(input) ?: return null
         val hLen = readShort(input)

@@ -1,4 +1,4 @@
-"""TCP 传输层：连接、收发帧、断线回调。"""
+"""TCP transport layer: connect, send/receive frames, disconnect callback."""
 import socket
 import threading
 

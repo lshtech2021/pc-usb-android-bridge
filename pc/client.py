@@ -1,6 +1,6 @@
-"""核心业务：文本消息、文件双向传输、远程调用（手机作 SSH 代理）。
+"""Core business logic: text messages, bidirectional file transfer, remote calls (phone as SSH proxy).
 
-PC 侧 id 空间从 1 起（手机侧从 0x40000000 起），避免双向 id 冲突。
+PC-side id space starts at 1 (phone side starts at 0x40000000) to avoid id collisions in both directions.
 """
 import hashlib
 import os
@@ -17,8 +17,8 @@ class PhoneClient:
     def __init__(self):
         self.tp = None
         self._id_lock = threading.Lock()
-        self._next_id = 1                      # PC 侧 id 空间：1 起
-        # ---- 事件回调（在网络线程中触发，UI 层负责切回主线程）----
+        self._next_id = 1                      # PC-side id space: starts at 1
+        # ---- Event callbacks (fired on the network thread; the UI layer switches back to the main thread) ----
         self.on_text = None            # fn(text)
         self.on_hello_ack = None       # fn(info)
         self.on_status = None          # fn(str)
@@ -26,12 +26,12 @@ class PhoneClient:
         self.on_file_done = None       # fn(fid, name, ok, direction, saved_path)
         self.on_remote_output = None   # fn(channel, stream, bytes)
         self.on_remote_close = None    # fn(channel, code, reason)
-        self.on_remote_error = None    # fn(channel, code, header) 通道级错误（含主机指纹确认）
+        self.on_remote_error = None    # fn(channel, code, header) channel-level error (including host fingerprint confirmation)
         self._recv, self.channels = {}, {}
         self.save_dir = os.path.abspath("downloads")
         os.makedirs(self.save_dir, exist_ok=True)
 
-    # ---------- 连接 ----------
+    # ---------- Connection ----------
     def connect(self, host="127.0.0.1", port=12580, token=""):
         self.tp = Transport(host, port, self._on_frame, self._on_disconnect)
         self.tp.start()
@@ -56,7 +56,7 @@ class PhoneClient:
             return v
 
     def _cleanup_partial(self):
-        """断线时关闭句柄并删除写了一半的文件，避免残留与句柄泄漏。"""
+        """On disconnect, close handles and delete half-written files to avoid leftovers and handle leaks."""
         for st in self._recv.values():
             try:
                 st["fp"].close()
@@ -74,11 +74,11 @@ class PhoneClient:
         self._cleanup_partial()
         self.on_status and self.on_status("[连接已断开]")
 
-    # ---------- 功能2：文本消息（双向） ----------
+    # ---------- Feature 2: text messages (bidirectional) ----------
     def send_text(self, text: str):
         self.tp.send(MsgType.TEXT, {"id": self._new_id(), "text": text})
 
-    # ---------- 功能1：文件传输（PC → 手机） ----------
+    # ---------- Feature 1: file transfer (PC -> phone) ----------
     def send_file(self, path: str):
         def worker():
             name, size = os.path.basename(path), os.path.getsize(path)
@@ -100,13 +100,13 @@ class PhoneClient:
 
         threading.Thread(target=worker, daemon=True).start()
 
-    # ---------- 文件接收（手机 → PC） ----------
+    # ---------- File receive (phone -> PC) ----------
     def _on_file_meta(self, h):
         safe = os.path.basename(h.get("name", "unnamed"))
         path = os.path.join(self.save_dir, safe)
         stem, ext = os.path.splitext(path)
         i = 1
-        while os.path.exists(path):          # 与手机端保持同样的 name(1).ext 规则
+        while os.path.exists(path):          # Keep the same name(1).ext rule as the phone side
             path = f"{stem}({i}){ext}"
             i += 1
         self._recv[h["id"]] = {"fp": open(path, "wb"), "name": safe,
@@ -127,11 +127,11 @@ class PhoneClient:
         self.on_file_done and self.on_file_done(
             h["id"], st["name"], ok, "down", st["path"] if ok else "")
 
-    # ---------- 功能3：远程调用（手机作代理） ----------
+    # ---------- Feature 3: remote calls (phone as proxy) ----------
     def remote_open(self, kind: str, trust_fingerprint: str = None, **params) -> int:
         ch = self._new_id()
         header = {"channel": ch, "kind": kind, **params}
-        if trust_fingerprint:                 # 不传 None，规避 JSON null 陷阱
+        if trust_fingerprint:                 # Do not pass None, to avoid the JSON null pitfall
             header["trust_fingerprint"] = trust_fingerprint
         self.channels[ch] = header
         self.tp.send(MsgType.REMOTE_OPEN, header)
@@ -145,7 +145,7 @@ class PhoneClient:
             self.tp.send(MsgType.REMOTE_CLOSE, {"channel": ch})
             self.channels.pop(ch, None)
 
-    # ---------- 消息分发 ----------
+    # ---------- Message dispatch ----------
     def _on_frame(self, t, h, p):
         M = MsgType
         try:

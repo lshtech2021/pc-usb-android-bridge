@@ -1,6 +1,6 @@
-"""PyQt5 界面：三个 Tab 对应三个功能（消息 / 文件 / 远程终端）。
+"""PyQt5 UI: three tabs corresponding to the three features (messages / files / remote terminal).
 
-运行：py ui.py
+Run: py ui.py
 """
 import sys
 
@@ -31,8 +31,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("USB Bridge 客户端")
         self.resize(820, 600)
         self.adb, self.client, self.ch = Adb(), PhoneClient(), None
-        self._pending = None          # 最近一次远程打开参数，用于指纹确认后重发
-        self._rows = {}               # fid -> 表格行号
+        self._pending = None          # Last remote-open parameters, used to resend after fingerprint confirmation
+        self._rows = {}               # fid -> table row index
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self.refresh()
 
-    # ---- Tab1 消息 ----
+    # ---- Tab1 Messages ----
     def _msg_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
         self.msg_view = QPlainTextEdit(); self.msg_view.setReadOnly(True)
@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
     def _on_status(self, s):
         self.msg_view.appendPlainText(s)
 
-    # ---- Tab2 文件（按 fid 分行，支持并发传输） ----
+    # ---- Tab2 Files (one row per fid, supports concurrent transfers) ----
     def _file_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
         b = QPushButton("选择文件发送到手机…"); b.clicked.connect(self.pick_send)
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         tip = ("完成" if ok else "失败") + (f" → {path}" if path else "")
         self.ftab.setItem(r, 3, QTableWidgetItem(("✓ " if ok else "✗ ") + tip))
 
-    # ---- Tab3 远程终端（手机代理 SSH） ----
+    # ---- Tab3 Remote terminal (phone as SSH proxy) ----
     def _term_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
         h = QHBoxLayout()
@@ -224,7 +224,7 @@ class MainWindow(QMainWindow):
     def term_send(self):
         line = self.term_input.text(); self.term_input.clear()
         if self.ch:
-            self.client.remote_input(self.ch, (line + "\n").encode())  # 行模式，适合执行命令
+            self.client.remote_input(self.ch, (line + "\n").encode())  # Line mode, suitable for running commands
 
     def _on_rout(self, ch, stream, data):
         self.term.insertPlainText(bytes(data).decode("utf-8", "ignore"))
@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
 
     def _on_rerr(self, ch, code, h):
         host, fp = h.get("host", ""), h.get("fingerprint", "")
-        if code == "UNKNOWN_HOST":                     # 首次连接：由用户确认指纹
+        if code == "UNKNOWN_HOST":                     # First connection: fingerprint is confirmed by the user
             ans = QMessageBox.question(
                 self, "首次连接该主机",
                 f"目标主机 {host} 的指纹不在手机已知主机库中：\n\n{fp}\n\n"
@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
         else:
             self.term.appendPlainText(f"\n** 远程错误 {code}: {h.get('message','')} **")
 
-    # ---- 连接管理 ----
+    # ---- Connection management ----
     def refresh(self):
         self.cmb.clear()
         try:

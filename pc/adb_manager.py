@@ -1,4 +1,4 @@
-"""adb 命令行封装：设备列表与端口转发。"""
+"""adb command-line wrapper: device listing and port forwarding."""
 import shutil
 import subprocess
 
@@ -19,7 +19,7 @@ class Adb:
         return out
 
     def forward(self, serial, local_port, remote_port):
-        """把 PC 的 local_port 转发到手机上的 remote_port（先清理可能残留的 forward）。"""
+        """Forward the PC's local_port to remote_port on the phone (clears any leftover forwards first)."""
         self._run("-s", serial, "forward", "--remove-all", check=False)
         self._run("-s", serial, "forward", f"tcp:{local_port}", f"tcp:{remote_port}")
 

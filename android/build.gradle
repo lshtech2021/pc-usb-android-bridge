@@ -1,4 +1,4 @@
-// 顶层构建文件：只声明插件版本，具体配置在 app/build.gradle
+// Top-level build file: only declares plugin versions; actual config lives in app/build.gradle
 plugins {
     id 'com.android.application' version '8.1.4' apply false
     id 'org.jetbrains.kotlin.android' version '1.9.10' apply false

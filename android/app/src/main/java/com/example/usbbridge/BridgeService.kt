@@ -3,12 +3,16 @@ package com.example.usbbridge
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSchException
@@ -20,12 +24,14 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.ArrayDeque
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 前台服务：在 127.0.0.1:PORT 上监听（由 PC 侧 adb forward 回连），每连接一个 SessionHandler。
+ * Foreground service: listens on 127.0.0.1:PORT (the PC side reconnects via adb forward), one SessionHandler per connection.
  */
 class BridgeService : Service() {
     override fun onBind(intent: Intent?) = null
@@ -33,24 +39,23 @@ class BridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         if (token.isEmpty()) token = randomToken()
-        if (Build.VERSION.SDK_INT >= 26) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "USB Bridge", NotificationManager.IMPORTANCE_LOW))
-        }
-        val n = buildNotification(this, "USB Bridge 运行中 (127.0.0.1:$PORT)", "Token: $token")
+        ensureChannels(this)
+        val n = buildNotification(this, "USB Bridge 运行中 (127.0.0.1:$PORT)", "Token: $token",
+            ongoing = true, channelId = CHANNEL_SERVICE)
         if (Build.VERSION.SDK_INT >= 29) {
-            ServiceCompat.startForeground(this, 1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            ServiceCompat.startForeground(this, NOTIF_SERVICE, n,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
-            startForeground(1, n)
+            startForeground(NOTIF_SERVICE, n)
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (running) return START_STICKY          // 防重入：重复点按钮/系统重启不再起第二个监听
+        if (running) return START_STICKY          // Re-entry guard: repeated button taps / system restart won't start a second listener
         running = true
         Thread {
             try {
-                // 只绑回环：设备侧 adb forward 通过 127.0.0.1 回连；同时避免其他 App 直接接入
+                // Bind loopback only: device-side adb forward reconnects via 127.0.0.1, and other apps cannot connect directly
                 val srv = ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"))
                 server = srv
                 while (running) {
@@ -78,7 +83,11 @@ class BridgeService : Service() {
 
     companion object {
         const val PORT = 9999
-        const val CHANNEL_ID = "usb_bridge"
+        const val CHANNEL_SERVICE = "usb_bridge"
+        const val CHANNEL_MESSAGE = "usb_bridge_msg"
+        const val NOTIF_SERVICE = 1
+        private const val NOTIF_MSG_BASE = 1000
+        private const val MAX_RECENT = 50
 
         @Volatile var token: String = ""
             private set
@@ -89,12 +98,16 @@ class BridgeService : Service() {
         private var server: ServerSocket? = null
         private val pool = Executors.newCachedThreadPool()
         private val sessions = CopyOnWriteArrayList<SessionHandler>()
+        private val mainHandler = Handler(Looper.getMainLooper())
+        private val textListeners = CopyOnWriteArrayList<(String) -> Unit>()
+        private val recentTexts = ArrayDeque<String>()
+        private val msgNotifSeq = AtomicInteger(0)
 
         fun randomToken(): String =
             ByteArray(4).also { SecureRandom().nextBytes(it) }
                 .joinToString("") { "%02x".format(it) }
 
-        /** 供 SessionHandler 复用线程池（手机端发送文件等耗时操作不能占用服务监听线程） */
+        /** Shared thread pool for SessionHandler (time-consuming phone-side operations like sending files must not occupy the service listener thread) */
         fun poolExecute(task: Runnable) {
             pool.execute(task)
         }
@@ -102,32 +115,78 @@ class BridgeService : Service() {
         fun addSession(s: SessionHandler) { sessions.add(s) }
         fun removeSession(s: SessionHandler) { sessions.remove(s) }
 
-        /** 手机端发起文本/文件：复用当前已建立的连接（PC 侧已具备接收逻辑） */
+        /** Phone-side text/file send: reuse the already-established connection (the PC side already has receive logic) */
         fun broadcastText(text: String) = sessions.forEach { it.sendText(text) }
 
         fun broadcastFile(file: File, cleanup: Boolean = false) =
             sessions.forEach { it.sendFile(file, cleanup) }
 
-        fun buildNotification(ctx: Context, title: String, text: String): Notification =
-            if (Build.VERSION.SDK_INT >= 26)
-                Notification.Builder(ctx, CHANNEL_ID)
-                    .setContentTitle(title).setContentText(text)
-                    .setSmallIcon(android.R.drawable.ic_menu_info_details).build()
-            else @Suppress("DEPRECATION")
-                Notification.Builder(ctx)
-                    .setContentTitle(title).setContentText(text)
-                    .setSmallIcon(android.R.drawable.ic_menu_info_details).build()
+        /** UI subscribes to PC -> phone text; the callback always runs on the main thread. Returns the currently cached recent messages. */
+        fun addTextListener(listener: (String) -> Unit): List<String> {
+            textListeners.add(listener)
+            synchronized(recentTexts) { return recentTexts.toList() }
+        }
+
+        fun removeTextListener(listener: (String) -> Unit) {
+            textListeners.remove(listener)
+        }
+
+        fun dispatchIncomingText(text: String) {
+            synchronized(recentTexts) {
+                recentTexts.addLast(text)
+                while (recentTexts.size > MAX_RECENT) recentTexts.removeFirst()
+            }
+            mainHandler.post {
+                textListeners.forEach { runCatching { it(text) } }
+            }
+        }
+
+        fun ensureChannels(ctx: Context) {
+            if (Build.VERSION.SDK_INT < 26) return
+            val nm = ctx.getSystemService(NotificationManager::class.java) ?: return
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_SERVICE, "USB Bridge", NotificationManager.IMPORTANCE_LOW))
+            nm.createNotificationChannel(
+                NotificationChannel(CHANNEL_MESSAGE, "PC 消息", NotificationManager.IMPORTANCE_DEFAULT))
+        }
+
+        fun buildNotification(
+            ctx: Context,
+            title: String,
+            text: String,
+            ongoing: Boolean = false,
+            channelId: String = CHANNEL_SERVICE
+        ): Notification {
+            val open = PendingIntent.getActivity(
+                ctx, 0, Intent(ctx, MainActivity::class.java),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            return NotificationCompat.Builder(ctx, channelId)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentIntent(open)
+                .setAutoCancel(!ongoing)
+                .setOngoing(ongoing)
+                .setPriority(
+                    if (ongoing) NotificationCompat.PRIORITY_LOW
+                    else NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+        }
+
+        fun nextMessageNotificationId(): Int =
+            NOTIF_MSG_BASE + (msgNotifSeq.getAndIncrement() and 0x0FFF)
     }
 }
 
-/** 单条 PC 连接：解析帧、落盘文件、执行远程会话。 */
+/** A single PC connection: parse frames, write files to disk, run remote sessions. */
 class SessionHandler(private val ctx: Context, private val sock: java.net.Socket) : Runnable, Closeable {
     private val out: OutputStream = sock.getOutputStream()
     private val outLock = Any()
     private val remotes = ConcurrentHashMap<Int, RemoteSession>()
     private val sinks = ConcurrentHashMap<Int, FileSink>()
 
-    /** 远程通道操作串行执行：保证 OPEN→DATA 顺序，同时不阻塞主读循环（TEXT/FILE/PING 不受 SSH 握手影响） */
+    /** Remote channel operations run serially: guarantees OPEN -> DATA ordering without blocking the main read loop (TEXT/FILE/PING are unaffected by the SSH handshake) */
     private val remoteOps = Executors.newSingleThreadExecutor()
 
     @Volatile private var closed = false
@@ -155,7 +214,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
     private fun handle(f: FrameIO.Frame) {
         with(f.header) {
-            // 首个帧必须是带正确 token 的 HELLO，否则拒绝
+            // The first frame must be a HELLO with the correct token, otherwise reject
             if (!authed) {
                 if (f.type == FrameIO.HELLO && optString("token") == BridgeService.token) {
                     authed = true
@@ -169,7 +228,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
             when (f.type) {
                 FrameIO.PING -> send(FrameIO.PONG, JSONObject())
 
-                FrameIO.TEXT -> {                                      // PC → 手机 文本
+                FrameIO.TEXT -> {                                      // PC -> phone text
                     notifyText(ctx, optString("text"))
                     send(FrameIO.ACK, JSONObject().put("id", optInt("id")))
                 }
@@ -178,7 +237,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                     val id = optInt("id")
                     try {
                         sinks[id] = FileSink.create(ctx, f.header)
-                    } catch (e: Exception) {                           // 磁盘满 / 无权限等
+                    } catch (e: Exception) {                           // Disk full / no permission, etc.
                         send(FrameIO.ERROR, JSONObject().put("code", "FILE_WRITE_FAILED")
                             .put("id", id).put("message", e.message ?: ""))
                     }
@@ -212,10 +271,10 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 
     private fun post(task: () -> Unit) {
-        runCatching { remoteOps.execute(task) }        // close() 后队列已关闭，忽略新任务
+        runCatching { remoteOps.execute(task) }        // The queue is shut down after close(), so new tasks are ignored
     }
 
-    // ---------- 功能1/2：手机 → PC 文本与文件 ----------
+    // ---------- Feature 1/2: phone -> PC text and files ----------
     fun sendText(text: String) =
         send(FrameIO.TEXT, JSONObject().put("id", FrameIO.nextId()).put("text", text))
 
@@ -241,11 +300,11 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                 send(FrameIO.FILE_END, JSONObject().put("id", id).put("ok", false)
                     .put("error", it.message ?: ""))
             }
-            if (cleanup) runCatching { file.delete() }          // 发送的是缓存副本，发完清理
+            if (cleanup) runCatching { file.delete() }          // What is sent is a cached copy, cleaned up after sending
         }
     }
 
-    // ---------- 功能3：远程会话 ----------
+    // ---------- Feature 3: remote session ----------
     private fun openRemote(f: FrameIO.Frame) = with(f.header) {
         val ch = optInt("channel")
         val host = optString("host")
@@ -292,12 +351,21 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 
     private fun notifyText(ctx: Context, text: String) {
+        // Always write to the in-app log (does not depend on notification permission)
+        BridgeService.dispatchIncomingText(text)
         if (Build.VERSION.SDK_INT >= 33 &&
             ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED) return       // 未授权则静默跳过，界面日志仍有记录
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify((System.currentTimeMillis() and 0xFFFF).toInt(),
-            BridgeService.buildNotification(ctx, "来自 PC 的消息", text))
+            PackageManager.PERMISSION_GRANTED) return
+        // A notification failure must not bring down the session thread / main thread (a bad icon, etc. kills the process with RemoteServiceException)
+        runCatching {
+            BridgeService.ensureChannels(ctx)
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(
+                BridgeService.nextMessageNotificationId(),
+                BridgeService.buildNotification(
+                    ctx, "来自 PC 的消息", text,
+                    ongoing = false, channelId = BridgeService.CHANNEL_MESSAGE))
+        }.onFailure { it.printStackTrace() }
     }
 
     override fun close() {
@@ -311,7 +379,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 }
 
-/** 文件落盘（App 外部私有目录，免存储权限）；带 SHA256 校验与 name(1).ext 重名规则 */
+/** Write file to disk (app external private dir, no storage permission needed); with SHA256 verification and the name(1).ext duplicate-name rule */
 class FileSink private constructor(private val file: File) {
     private val fos = file.outputStream()
     private val md = MessageDigest.getInstance("SHA-256")
@@ -338,7 +406,7 @@ class FileSink private constructor(private val file: File) {
     companion object {
         fun createDir(ctx: Context): File = ctx.getExternalFilesDir(null) ?: ctx.filesDir
 
-        /** 与 PC 端一致：a.txt → a(1).txt */
+        /** Consistent with the PC side: a.txt -> a(1).txt */
         fun uniqueName(dir: File, name: String): File {
             val safe = File(name).name
             var f = File(dir, safe)

@@ -8,11 +8,11 @@ import java.io.File
 import java.security.MessageDigest
 
 /**
- * TOFU（Trust On First Use）已知主机库。
+ * TOFU (Trust On First Use) known-hosts store.
  *
- * 存储格式：每行 "host<TAB>SHA256:xxx"，指纹与 OpenSSH 一致（`ssh-keygen -lf` 可交叉核对）。
+ * Storage format: one "host<TAB>SHA256:xxx" per line; fingerprints match OpenSSH (cross-check with `ssh-keygen -lf`).
  *
- * @param approvedFingerprint PC 端已人工确认的指纹；仅当它等于实际指纹时才写入并放行。
+ * @param approvedFingerprint fingerprint manually confirmed on the PC side; only written and allowed through when it equals the actual fingerprint.
  */
 class TofuHostKeys(
     private val store: File,
@@ -40,9 +40,9 @@ class TofuHostKeys(
         val recorded = known[host]
         lastResult = when {
             recorded == null && approvedFingerprint == fp -> { trust(host, fp); HostKeyRepository.OK }
-            recorded == null -> HostKeyRepository.NOT_INCLUDED                    // 未知主机：交 PC 端确认
+            recorded == null -> HostKeyRepository.NOT_INCLUDED                    // Unknown host: leave to PC side for confirmation
             recorded == fp -> HostKeyRepository.OK
-            else -> HostKeyRepository.CHANGED                                     // 指纹变更：拒绝
+            else -> HostKeyRepository.CHANGED                                     // Fingerprint changed: reject
         }
         return lastResult
     }
@@ -52,7 +52,7 @@ class TofuHostKeys(
         persist()
     }
 
-    /** HostKey 的 key 字段是 protected，无法从外部读取，故复用 check() 时缓存的指纹。 */
+    /** HostKey's key field is protected and unreadable from outside, so reuse the fingerprint cached during check(). */
     override fun add(hostkey: HostKey, ui: UserInfo?) {
         val h = lastHost ?: return
         val fp = lastFingerprint ?: return
