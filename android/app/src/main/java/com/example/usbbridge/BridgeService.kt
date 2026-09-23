@@ -167,7 +167,7 @@ class BridgeService : Service() {
         private val sessions = CopyOnWriteArrayList<SessionHandler>()
         private val mainHandler = Handler(Looper.getMainLooper())
         private val textListeners = CopyOnWriteArrayList<(String) -> Unit>()
-        private val recentTexts = ArrayDeque<String>()
+        private val recentTexts = ArrayDeque<Message>()
         private val msgNotifSeq = AtomicInteger(0)
 
         fun randomToken(): String =
@@ -220,7 +220,7 @@ class BridgeService : Service() {
         }
 
         /** UI subscribes to PC -> phone text; the callback always runs on the main thread. Returns the currently cached recent messages. */
-        fun addTextListener(listener: (String) -> Unit): List<String> {
+        fun addTextListener(listener: (String) -> Unit): List<Message> {
             textListeners.add(listener)
             synchronized(recentTexts) { return recentTexts.toList() }
         }
@@ -231,7 +231,7 @@ class BridgeService : Service() {
 
         fun dispatchIncomingText(text: String) {
             synchronized(recentTexts) {
-                recentTexts.addLast(text)
+                recentTexts.addLast(Message(text, System.currentTimeMillis()))
                 while (recentTexts.size > MAX_RECENT) recentTexts.removeFirst()
             }
             mainHandler.post {
@@ -285,6 +285,9 @@ class BridgeService : Service() {
 
         fun nextMessageNotificationId(): Int =
             NOTIF_MSG_BASE + (msgNotifSeq.getAndIncrement() and 0x0FFF)
+
+        /** A PC -> phone message plus when it arrived, so the log can show a timestamp. */
+        data class Message(val text: String, val at: Long)
     }
 }
 

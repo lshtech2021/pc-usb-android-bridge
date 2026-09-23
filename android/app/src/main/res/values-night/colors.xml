@@ -24,4 +24,7 @@
     <color name="brand_surface_variant">#3F4946</color>
     <color name="brand_on_surface_variant">#BEC9C6</color>
     <color name="brand_outline">#889390</color>
+
+    <color name="status_running">#81C995</color>
+    <color name="status_stopped">#9AA0A6</color>
 </resources>

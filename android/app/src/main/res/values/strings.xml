@@ -1,11 +1,48 @@
 <resources>
     <string name="app_name">USB Bridge</string>
 
+    <!-- Service control -->
     <string name="action_start_service">Start USB Bridge service</string>
     <string name="action_stop_service">Stop USB Bridge service</string>
+    <string name="state_running">Running</string>
+    <string name="state_stopped">Stopped</string>
+    <string name="status_listening">Listening on 127.0.0.1:%1$d</string>
+    <string name="status_not_listening">Start the service to accept a PC connection</string>
+    <string name="status_ssh_running">SSH running: %1$s</string>
+    <string name="label_token">Token</string>
+    <string name="token_none">Start the service to get a token</string>
+    <string name="cd_copy_token">Copy token</string>
+    <string name="token_copied">Token copied</string>
+
+    <!-- Sections -->
+    <string name="section_connections">Connections</string>
+    <string name="section_save_folder">Save folder</string>
+    <string name="section_messages">Messages</string>
+    <string name="hint_message_copy">Long-press a message to copy it</string>
+    <string name="empty_no_messages">No messages yet</string>
 
     <string name="title_ssh_connections">SSH Connections</string>
     <string name="title_trusted_pcs">Trusted PCs</string>
+
+    <!-- Save folder -->
+    <string name="folder_app_default">App default</string>
+    <string name="action_change">Change</string>
+    <string name="action_reset_default">Reset</string>
+
+    <!-- Send bar -->
+    <string name="hint_send_text">Message the PC…</string>
+    <string name="cd_send_text">Send text</string>
+    <string name="cd_send_file">Send file</string>
+
+    <!-- Log notices -->
+    <string name="message_copied">Message copied</string>
+    <string name="notice_save_folder_updated">Save folder updated</string>
+    <string name="notice_save_folder_reset">Save folder reset to app default</string>
+    <string name="notice_preparing_send">Preparing to send: %1$s</string>
+    <string name="notice_send_started">Send started: %1$s</string>
+    <string name="notice_send_failed_no_pc">Send failed: PC not connected</string>
+    <string name="notice_send_failed">Send failed: %1$s</string>
+    <string name="notice_forgot_pc">Forgot PC %1$s</string>
 
     <string name="notif_action_stop">Stop</string>
 </resources>

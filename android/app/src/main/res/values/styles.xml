@@ -13,12 +13,25 @@
         <item name="android:textSize">15sp</item>
     </style>
 
-    <style name="TextAppearance.UsbBridge.Label" parent="TextAppearance.Material3.LabelLarge">
-        <item name="android:textSize">14sp</item>
-    </style>
-
     <style name="TextAppearance.UsbBridge.Caption" parent="TextAppearance.Material3.BodySmall">
         <item name="android:textSize">13sp</item>
+    </style>
+
+    <!-- Muted group label above a cluster of rows. -->
+    <style name="TextAppearance.UsbBridge.SectionHeader" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/brand_on_surface_variant</item>
+    </style>
+
+    <!-- Timestamp inside a bubble. -->
+    <style name="TextAppearance.UsbBridge.BubbleTime" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">11sp</item>
+    </style>
+
+    <!-- Centred system notice (folder changed, send failed) rather than a chat bubble. -->
+    <style name="TextAppearance.UsbBridge.Notice" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/brand_on_surface_variant</item>
     </style>
 
     <!--
@@ -37,6 +50,32 @@
         <item name="android:paddingEnd">@dimen/button_padding_horizontal</item>
         <item name="android:paddingTop">@dimen/space_s</item>
         <item name="android:paddingBottom">@dimen/space_s</item>
+    </style>
+
+    <!-- The one screen-defining action, e.g. Start/Stop the bridge. -->
+    <style name="Widget.UsbBridge.Button.Primary" parent="Widget.UsbBridge.Button">
+        <item name="android:background">@drawable/bg_primary_button</item>
+        <item name="android:textColor">@color/brand_on_primary</item>
+    </style>
+
+    <!--
+      Button variants cannot be applied by passing a style to a View constructor, so each
+      variant gets a theme overlay that overrides android:buttonStyle; build the Button with
+      ContextThemeWrapper(context, R.style.ThemeOverlay_UsbBridge_PrimaryButton).
+    -->
+    <style name="ThemeOverlay.UsbBridge.PrimaryButton" parent="">
+        <item name="android:buttonStyle">@style/Widget.UsbBridge.Button.Primary</item>
+    </style>
+
+    <!-- Borderless, for secondary inline actions. -->
+    <style name="Widget.UsbBridge.Button.Text" parent="Widget.UsbBridge.Button">
+        <item name="android:background">@drawable/bg_text_button</item>
+        <item name="android:textColor">@color/brand_primary</item>
+        <item name="android:minHeight">40dp</item>
+    </style>
+
+    <style name="ThemeOverlay.UsbBridge.TextButton" parent="">
+        <item name="android:buttonStyle">@style/Widget.UsbBridge.Button.Text</item>
     </style>
 
 </resources>

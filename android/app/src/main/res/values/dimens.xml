@@ -19,4 +19,16 @@
     <dimen name="button_min_height">48dp</dimen>
     <dimen name="button_corner_radius">12dp</dimen>
     <dimen name="button_padding_horizontal">12dp</dimen>
+
+    <dimen name="card_corner_radius">12dp</dimen>
+    <dimen name="card_padding">16dp</dimen>
+    <dimen name="divider_height">1dp</dimen>
+    <dimen name="row_min_height">56dp</dimen>
+    <dimen name="icon_size">24dp</dimen>
+    <dimen name="icon_button_size">44dp</dimen>
+    <dimen name="status_dot_size">10dp</dimen>
+    <dimen name="bubble_corner_radius">16dp</dimen>
+    <dimen name="bubble_padding_horizontal">12dp</dimen>
+    <dimen name="bubble_padding_vertical">8dp</dimen>
+    <dimen name="bubble_gap">6dp</dimen>
 </resources>

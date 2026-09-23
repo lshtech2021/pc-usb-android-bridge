@@ -29,4 +29,8 @@
     <color name="brand_surface_variant">#DAE5E1</color>
     <color name="brand_on_surface_variant">#3F4946</color>
     <color name="brand_outline">#6F7976</color>
+
+    <!-- Connection state. Errors reuse brand_error. -->
+    <color name="status_running">#2E7D32</color>
+    <color name="status_stopped">#5F6368</color>
 </resources>

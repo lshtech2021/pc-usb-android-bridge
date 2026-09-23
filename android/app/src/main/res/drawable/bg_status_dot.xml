@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Neutral oval; tinted per state (running / stopped / error) via backgroundTintList. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/status_stopped" />
+    <size
+        android:width="@dimen/status_dot_size"
+        android:height="@dimen/status_dot_size" />
+</shape>
