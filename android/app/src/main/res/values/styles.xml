@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Typography and widget tokens. Applied from Kotlin with
+  TextViewCompat.setTextAppearance(...) so the screens stop hardcoding textSize.
+-->
+<resources>
+
+    <style name="TextAppearance.UsbBridge.Body" parent="TextAppearance.Material3.BodyLarge">
+        <item name="android:textSize">16sp</item>
+    </style>
+
+    <style name="TextAppearance.UsbBridge.BodyDense" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <style name="TextAppearance.UsbBridge.Label" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textSize">14sp</item>
+    </style>
+
+    <style name="TextAppearance.UsbBridge.Caption" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">13sp</item>
+    </style>
+
+    <!--
+      Platform Button styling. android:buttonStyle is not set by Material themes, so
+      without this the buttons stay square, grey and ALL-CAPS.
+    -->
+    <style name="Widget.UsbBridge.Button" parent="Widget.AppCompat.Button">
+        <item name="android:background">@drawable/bg_tonal_button</item>
+        <item name="android:textColor">?attr/colorOnSurface</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0.01</item>
+        <item name="android:gravity">center</item>
+        <item name="android:minHeight">@dimen/button_min_height</item>
+        <item name="android:paddingStart">@dimen/button_padding_horizontal</item>
+        <item name="android:paddingEnd">@dimen/button_padding_horizontal</item>
+        <item name="android:paddingTop">@dimen/space_s</item>
+        <item name="android:paddingBottom">@dimen/space_s</item>
+    </style>
+
+</resources>

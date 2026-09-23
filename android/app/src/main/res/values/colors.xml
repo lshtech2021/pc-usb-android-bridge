@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Brand palette. Teal was already the app's de-facto accent (the AppCompat default
+  showed up on dialog buttons); this makes it deliberate and gives every screen one
+  source of truth for colour instead of framework defaults.
+  Night overrides live in values-night/colors.xml.
+-->
+<resources>
+    <color name="brand_primary">#00695C</color>
+    <color name="brand_on_primary">#FFFFFF</color>
+    <color name="brand_primary_container">#9CF2E3</color>
+    <color name="brand_on_primary_container">#00201B</color>
+
+    <color name="brand_secondary">#4A635F</color>
+    <color name="brand_on_secondary">#FFFFFF</color>
+    <color name="brand_secondary_container">#CCE8E3</color>
+    <color name="brand_on_secondary_container">#06201C</color>
+
+    <color name="brand_tertiary">#446179</color>
+    <color name="brand_on_tertiary">#FFFFFF</color>
+
+    <color name="brand_error">#BA1A1A</color>
+    <color name="brand_on_error">#FFFFFF</color>
+    <color name="brand_error_container">#FFDAD6</color>
+    <color name="brand_on_error_container">#410002</color>
+
+    <color name="brand_surface">#F5FBF9</color>
+    <color name="brand_on_surface">#171D1B</color>
+    <color name="brand_surface_variant">#DAE5E1</color>
+    <color name="brand_on_surface_variant">#3F4946</color>
+    <color name="brand_outline">#6F7976</color>
+</resources>

@@ -1,3 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.UsbBridge" parent="Theme.AppCompat.DayNight.NoActionBar"/>
+
+    <!--
+      Material 3 DayNight, mapped onto the brand palette in colors.xml.
+
+      Note on the programmatic UI: Material's ViewInflater only rewrites views inflated
+      from XML, so the Button/EditText/CheckBox this app creates in Kotlin are NOT
+      converted to their Material equivalents. Material themes deliberately leave the
+      framework style attributes (android:buttonStyle, android:editTextStyle, ...) alone,
+      so those views keep rendering as before - only the theme roles, ripples, dialogs
+      and dark mode change. android:buttonStyle is set explicitly below because the
+      platform default is what made the buttons look flat and grey.
+    -->
+    <style name="Theme.UsbBridge" parent="Theme.Material3.DayNight.NoActionBar">
+
+        <item name="colorPrimary">@color/brand_primary</item>
+        <item name="colorOnPrimary">@color/brand_on_primary</item>
+        <item name="colorPrimaryContainer">@color/brand_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/brand_on_primary_container</item>
+
+        <item name="colorSecondary">@color/brand_secondary</item>
+        <item name="colorOnSecondary">@color/brand_on_secondary</item>
+        <item name="colorSecondaryContainer">@color/brand_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/brand_on_secondary_container</item>
+
+        <item name="colorTertiary">@color/brand_tertiary</item>
+        <item name="colorOnTertiary">@color/brand_on_tertiary</item>
+
+        <item name="colorError">@color/brand_error</item>
+        <item name="colorOnError">@color/brand_on_error</item>
+        <item name="colorErrorContainer">@color/brand_error_container</item>
+        <item name="colorOnErrorContainer">@color/brand_on_error_container</item>
+
+        <item name="colorSurface">@color/brand_surface</item>
+        <item name="colorOnSurface">@color/brand_on_surface</item>
+        <item name="colorSurfaceVariant">@color/brand_surface_variant</item>
+        <item name="colorOnSurfaceVariant">@color/brand_on_surface_variant</item>
+        <item name="colorOutline">@color/brand_outline</item>
+
+        <item name="android:buttonStyle">@style/Widget.UsbBridge.Button</item>
+
+    </style>
+
 </resources>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spacing / sizing tokens, on a 4dp scale.
+
+  The UI is built in Kotlin, so every gap used to be a raw pixel literal
+  (setPadding(40, 40, 40, 40) etc.). Those were device-dependent: 40px is ~15dp on a
+  420dpi phone but ~26dp on a 240dpi one. These values keep the current look on a
+  420dpi reference screen while making it consistent everywhere.
+-->
+<resources>
+    <dimen name="space_xs">4dp</dimen>
+    <dimen name="space_s">8dp</dimen>
+    <dimen name="space_l">16dp</dimen>
+    <dimen name="space_xl">24dp</dimen>
+
+    <dimen name="screen_padding">16dp</dimen>
+    <dimen name="dialog_padding_horizontal">16dp</dimen>
+
+    <dimen name="button_min_height">48dp</dimen>
+    <dimen name="button_corner_radius">12dp</dimen>
+    <dimen name="button_padding_horizontal">12dp</dimen>
+</resources>

@@ -41,6 +41,7 @@ class BridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        stopping = false        // A fresh instance is never mid-shutdown; stale true would block startForeground
         if (token.isEmpty()) token = randomToken()
         ensureChannels(this)
         // Must call startForeground promptly (Android 8+ time limit)
@@ -49,6 +50,11 @@ class BridgeService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            shutdownBridge()
+            return START_NOT_STICKY
+        }
+        stopping = false        // A start can arrive on the same instance while a shutdown is pending
         if (running) {
             refreshForegroundNotification()
             return START_STICKY
@@ -88,12 +94,33 @@ class BridgeService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * Stop listening and drop the foreground notification.
+     *
+     * The token is deliberately kept: the PC already has it saved, so a later Start reuses
+     * it instead of forcing a re-pair. Phone-managed SSH sessions are left alone, matching
+     * the behaviour documented in onDestroy.
+     */
+    private fun shutdownBridge() {
+        stopping = true
+        running = false
+        server?.let { runCatching { it.close() } }
+        server = null
+        sessions.forEach { runCatching { it.close() } }
+        sessions.clear()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
     private fun refreshForegroundNotification() {
         if (Looper.myLooper() == Looper.getMainLooper()) startForegroundNow()
         else mainHandler.post { startForegroundNow() }
     }
 
     private fun startForegroundNow() {
+        // A hub listener can fire between stopForeground() and onDestroy(); re-promoting then
+        // would resurrect the notification the user just dismissed.
+        if (stopping) return
         val ssh = ConnectionHub.runningIds()
         val title = if (running) {
             "USB Bridge listening (127.0.0.1:$PORT)"
@@ -117,6 +144,7 @@ class BridgeService : Service() {
 
     companion object {
         const val PORT = 9999
+        const val ACTION_STOP = "com.example.usbbridge.action.STOP_BRIDGE"
         const val CHANNEL_SERVICE = "usb_bridge"
         const val CHANNEL_MESSAGE = "usb_bridge_msg"
         const val NOTIF_SERVICE = 1
@@ -131,6 +159,9 @@ class BridgeService : Service() {
         @Volatile var running: Boolean = false
             private set
 
+        /** True while shutting down; suppresses re-promoting the service to foreground. */
+        @Volatile private var stopping: Boolean = false
+
         private var server: ServerSocket? = null
         private val pool = Executors.newCachedThreadPool()
         private val sessions = CopyOnWriteArrayList<SessionHandler>()
@@ -142,6 +173,15 @@ class BridgeService : Service() {
         fun randomToken(): String =
             ByteArray(4).also { SecureRandom().nextBytes(it) }
                 .joinToString("") { "%02x".format(it) }
+
+        /**
+         * Ask a running bridge to shut down. No-op when it is not running, so this cannot
+         * cold-start the service just to stop it.
+         */
+        fun stop(ctx: Context) {
+            if (!running) return
+            ctx.startService(Intent(ctx, BridgeService::class.java).setAction(ACTION_STOP))
+        }
 
         /** Shared thread pool for SessionHandler (time-consuming phone-side operations like sending files must not occupy the service listener thread) */
         fun poolExecute(task: Runnable) {
@@ -218,7 +258,7 @@ class BridgeService : Service() {
             val open = PendingIntent.getActivity(
                 ctx, 0, Intent(ctx, MainActivity::class.java),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            return NotificationCompat.Builder(ctx, channelId)
+            val builder = NotificationCompat.Builder(ctx, channelId)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -226,11 +266,22 @@ class BridgeService : Service() {
                 .setContentIntent(open)
                 .setAutoCancel(!ongoing)
                 .setOngoing(ongoing)
+            // Only the ongoing service notification gets the action, so the bridge can be
+            // stopped straight from the shade.
+            if (ongoing) {
+                builder.addAction(0, ctx.getString(R.string.notif_action_stop), stopAction(ctx))
+            }
+            return builder
                 .setPriority(
                     if (ongoing) NotificationCompat.PRIORITY_LOW
                     else NotificationCompat.PRIORITY_DEFAULT)
                 .build()
         }
+
+        private fun stopAction(ctx: Context): PendingIntent =
+            PendingIntent.getService(
+                ctx, 1, Intent(ctx, BridgeService::class.java).setAction(ACTION_STOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
         fun nextMessageNotificationId(): Int =
             NOTIF_MSG_BASE + (msgNotifSeq.getAndIncrement() and 0x0FFF)

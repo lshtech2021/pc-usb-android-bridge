@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive launcher icon foreground. Generated from the same geometry as the legacy
+  mipmap PNGs; safe zone is the centre 72x72 of the 108x108 viewport.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30.5,38 L39.5,38 A4.5,4.5 0 0 1 44,42.5 L44,65.5 A4.5,4.5 0 0 1 39.5,70 L30.5,70 A4.5,4.5 0 0 1 26,65.5 L26,42.5 A4.5,4.5 0 0 1 30.5,38 Z M67.5,46 L78.5,46 A3.5,3.5 0 0 1 82,49.5 L82,60.5 A3.5,3.5 0 0 1 78.5,64 L67.5,64 A3.5,3.5 0 0 1 64,60.5 L64,49.5 A3.5,3.5 0 0 1 67.5,46 Z M46,48 L58,48 L58,52 L46,52 Z M63,50 L57,45 L57,55 Z M50,56 L62,56 L62,60 L50,60 Z M45,58 L51,53 L51,63 Z" />
+</vector>

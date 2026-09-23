@@ -16,11 +16,16 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.TextViewCompat
+import com.google.android.material.appbar.MaterialToolbar
 
 /** CRUD + Start/Stop for phone-managed SSH connection profiles. */
 class ConnectionsActivity : AppCompatActivity() {
     private lateinit var listBox: LinearLayout
     private val refreshListener: () -> Unit = { runOnUiThread { renderList() } }
+
+    /** Resolve a dimens token to pixels (the UI is built in Kotlin, so paddings are raw px). */
+    private fun dp(resId: Int): Int = resources.getDimensionPixelSize(resId)
 
     /** Filled by the open edit dialog; used when a PEM file is picked. */
     private var pendingKeyField: EditText? = null
@@ -68,19 +73,36 @@ class ConnectionsActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
             addView(listBox)
         }
-        setContentView(LinearLayout(this).apply {
+        // The toolbar is added unpadded so its surface reaches the screen edges; the
+        // padding lives on the content below it.
+        val toolbar = MaterialToolbar(this)
+        val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 32, 32, 32)
-            addView(TextView(this@ConnectionsActivity).apply {
-                text = "SSH Connections"
-                textSize = 20f
-                setPadding(0, 0, 0, 16)
-            })
+            val pad = dp(R.dimen.screen_padding)
+            setPadding(pad, pad, pad, pad)
             addView(add)
             addView(clearHosts)
             addView(scroll)
+        }
+        setContentView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(toolbar, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(content, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         })
+
+        setSupportActionBar(toolbar)
+        setTitle(R.string.title_ssh_connections)
+        supportActionBar?.setDisplayHomeAsUpEnabled(true)
         renderList()
+    }
+
+    // The manifest already declares MainActivity as the parent, so up == back.
+    override fun onSupportNavigateUp(): Boolean {
+        onBackPressedDispatcher.onBackPressed()
+        return true
     }
 
     override fun onStart() {
@@ -103,7 +125,8 @@ class ConnectionsActivity : AppCompatActivity() {
         if (profiles.isEmpty()) {
             listBox.addView(TextView(this).apply {
                 text = "No connections yet. Tap Add connection."
-                setPadding(0, 24, 0, 0)
+                TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_BodyDense)
+                setPadding(0, dp(R.dimen.space_xl), 0, 0)
             })
             return
         }
@@ -118,19 +141,19 @@ class ConnectionsActivity : AppCompatActivity() {
             }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 16, 0, 8)
+                setPadding(0, dp(R.dimen.space_l), 0, dp(R.dimen.space_s))
             }
             row.addView(TextView(this).apply {
                 text = "${p.id}  ${p.name}\n${p.user}@${p.host}:${p.port}\n" +
                     "Auth: $authHint · State: $state" +
                     if (!err.isNullOrBlank()) "\nError: $err" else ""
-                textSize = 15f
+                TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_BodyDense)
                 setTextIsSelectable(true)
             })
             val fp = TofuHostKeys.fingerprintOf(TofuHostKeys.storeFile(this), p.host, p.port)
             row.addView(TextView(this).apply {
-                textSize = 13f
-                setPadding(0, 4, 0, 4)
+                TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Caption)
+                setPadding(0, dp(R.dimen.space_xs), 0, dp(R.dimen.space_xs))
                 setTextIsSelectable(true)
                 if (fp != null) {
                     text = "Host key (full — long-press or Copy):\n$fp"
@@ -147,14 +170,15 @@ class ConnectionsActivity : AppCompatActivity() {
             fun actionRow(vararg specs: Pair<String, () -> Unit>): LinearLayout {
                 val rowLay = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    setPadding(0, 4, 0, 0)
+                    setPadding(0, dp(R.dimen.space_xs), 0, 0)
                 }
                 specs.forEach { (label, click) ->
                     rowLay.addView(Button(this).apply {
                         text = label
                         setOnClickListener { click() }
-                        // Smaller padding so more buttons fit
-                        setPadding(16, 8, 16, 8)
+                        // Tighter than the default token so three buttons fit one row
+                        val compact = dp(R.dimen.space_s)
+                        setPadding(compact, compact, compact, compact)
                     })
                 }
                 return rowLay
@@ -201,15 +225,16 @@ class ConnectionsActivity : AppCompatActivity() {
         }
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 8)
+            setPadding(dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_xl),
+                dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_s))
             addView(TextView(this@ConnectionsActivity).apply {
                 text = "Remove trusted key for ${p.host}:${p.port}?\n\nFull fingerprint:"
             })
             addView(TextView(this@ConnectionsActivity).apply {
                 text = fp
-                textSize = 13f
+                TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Caption)
                 setTextIsSelectable(true)
-                setPadding(0, 8, 0, 8)
+                setPadding(0, dp(R.dimen.space_s), 0, dp(R.dimen.space_s))
             })
             addView(TextView(this@ConnectionsActivity).apply {
                 text = "\nNext Start will ask you to Trust the fingerprint again."
@@ -293,8 +318,8 @@ class ConnectionsActivity : AppCompatActivity() {
                 InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
         val keyStatus = TextView(this).apply {
-            textSize = 13f
-            setPadding(0, 4, 0, 8)
+            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Caption)
+            setPadding(0, dp(R.dimen.space_xs), 0, dp(R.dimen.space_s))
             text = when {
                 existing?.privateKey != null ->
                     "Saved key on file (${existing.privateKey.length} chars). Paste/pick to replace."
@@ -365,7 +390,8 @@ class ConnectionsActivity : AppCompatActivity() {
         }
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 16, 40, 0)
+            setPadding(dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_l),
+                dp(R.dimen.dialog_padding_horizontal), 0)
             addView(name)
             addView(host)
             addView(port)
@@ -374,7 +400,7 @@ class ConnectionsActivity : AppCompatActivity() {
             addView(showPassword)
             addView(TextView(this@ConnectionsActivity).apply {
                 text = "Private key (PEM or OpenSSH)"
-                setPadding(0, 16, 0, 4)
+                setPadding(0, dp(R.dimen.space_l), 0, dp(R.dimen.space_xs))
             })
             addView(keyActions)
             addView(keyStatus)

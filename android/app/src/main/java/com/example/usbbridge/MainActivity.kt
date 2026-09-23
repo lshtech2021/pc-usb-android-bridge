@@ -1,6 +1,5 @@
 package com.example.usbbridge
 
-import android.app.AlertDialog
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -14,8 +13,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.widget.TextViewCompat
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
 
@@ -25,6 +26,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var saveFolderLabel: TextView
     private lateinit var msgLog: TextView
     private lateinit var input: EditText
+    private lateinit var serviceButton: Button
+
+    /** Resolve a dimens token to pixels (the UI is built in Kotlin, so paddings are raw px). */
+    private fun dp(resId: Int): Int = resources.getDimensionPixelSize(resId)
 
     private val onPcText: (String) -> Unit = { text ->
         runOnUiThread { appendMsg("[PC] $text") }
@@ -61,26 +66,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         info = TextView(this).apply {
-            textSize = 16f
+            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Body)
             setTextIsSelectable(true)
         }
         saveFolderLabel = TextView(this).apply {
-            textSize = 14f
-            setPadding(0, 16, 0, 4)
+            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Label)
+            setPadding(0, dp(R.dimen.space_l), 0, dp(R.dimen.space_xs))
             setTextIsSelectable(true)
         }
         msgLog = TextView(this).apply {
-            textSize = 15f
-            setPadding(0, 8, 0, 8)
+            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_BodyDense)
+            setPadding(0, dp(R.dimen.space_s), 0, dp(R.dimen.space_s))
             text = "(no messages yet)"
             setTextIsSelectable(true)
         }
         val msgTitle = TextView(this).apply {
             text = "Received messages (long-press to copy)"
-            textSize = 16f
-            setPadding(0, 24, 0, 4)
+            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Body)
+            setPadding(0, dp(R.dimen.space_xl), 0, dp(R.dimen.space_xs))
         }
-        val start = Button(this).apply { text = "Start USB Bridge service" }
+        serviceButton = Button(this).apply {
+            setOnClickListener {
+                if (BridgeService.running) {
+                    BridgeService.stop(this@MainActivity)
+                } else {
+                    ContextCompat.startForegroundService(
+                        this@MainActivity, Intent(this@MainActivity, BridgeService::class.java))
+                }
+                postDelayed({ refreshServiceStatus() }, 300)
+            }
+        }
         val connections = Button(this).apply {
             text = "SSH Connections"
             setOnClickListener {
@@ -105,10 +120,6 @@ class MainActivity : AppCompatActivity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT))
         }
 
-        start.setOnClickListener {
-            ContextCompat.startForegroundService(this, Intent(this, BridgeService::class.java))
-            info.postDelayed({ refreshServiceStatus() }, 300)
-        }
         chooseFolder.setOnClickListener {
             val initial = ReceiveDirPrefs.getTreeUri(this)
             pickSaveDir.launch(initial)
@@ -133,9 +144,10 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(40, 40, 40, 40)
+            val pad = dp(R.dimen.screen_padding)
+            setPadding(pad, pad, pad, pad)
             addView(info)
-            addView(start)
+            addView(serviceButton)
             addView(connections)
             addView(trustedPcs)
             addView(saveFolderLabel)
@@ -175,6 +187,9 @@ class MainActivity : AppCompatActivity() {
     private fun refreshServiceStatus() {
         if (!::info.isInitialized) return
         val ssh = ConnectionHub.runningIds()
+        serviceButton.text = getString(
+            if (BridgeService.running) R.string.action_stop_service
+            else R.string.action_start_service)
         info.text = when {
             BridgeService.running && BridgeService.token.isNotEmpty() -> buildString {
                 append("Listening on 127.0.0.1:${BridgeService.PORT}\n")
@@ -183,9 +198,9 @@ class MainActivity : AppCompatActivity() {
                 else append("SSH: none (Start from SSH Connections)")
             }
             BridgeService.token.isNotEmpty() -> buildString {
-                append("Service present but not listening\n")
+                append("Bridge stopped\n")
                 append("Token: ${BridgeService.token}\n")
-                append("Tap Start USB Bridge service to resume")
+                append("Starting again reuses this token, so the PC reconnects without re-pairing")
             }
             else -> "Service not running. Tap Start USB Bridge service."
         }
@@ -195,7 +210,7 @@ class MainActivity : AppCompatActivity() {
         val entries = PcTrustStore.list(this)
         if (entries.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle("Trusted PCs")
+                .setTitle(R.string.title_trusted_pcs)
                 .setMessage("No trusted PCs yet. Approve a PC when it connects.")
                 .setPositiveButton("OK", null)
                 .show()

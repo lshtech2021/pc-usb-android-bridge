@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dark-mode brand palette. Same roles as values/colors.xml. -->
+<resources>
+    <color name="brand_primary">#53DBC9</color>
+    <color name="brand_on_primary">#003731</color>
+    <color name="brand_primary_container">#005048</color>
+    <color name="brand_on_primary_container">#71F8E5</color>
+
+    <color name="brand_secondary">#B1CCC7</color>
+    <color name="brand_on_secondary">#1C3532</color>
+    <color name="brand_secondary_container">#334B48</color>
+    <color name="brand_on_secondary_container">#CCE8E3</color>
+
+    <color name="brand_tertiary">#ABC9E5</color>
+    <color name="brand_on_tertiary">#143349</color>
+
+    <color name="brand_error">#FFB4AB</color>
+    <color name="brand_on_error">#690005</color>
+    <color name="brand_error_container">#93000A</color>
+    <color name="brand_on_error_container">#FFDAD6</color>
+
+    <color name="brand_surface">#0E1513</color>
+    <color name="brand_on_surface">#DDE4E1</color>
+    <color name="brand_surface_variant">#3F4946</color>
+    <color name="brand_on_surface_variant">#BEC9C6</color>
+    <color name="brand_outline">#889390</color>
+</resources>

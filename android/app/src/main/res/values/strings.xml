@@ -1,3 +1,11 @@
 <resources>
     <string name="app_name">USB Bridge</string>
+
+    <string name="action_start_service">Start USB Bridge service</string>
+    <string name="action_stop_service">Stop USB Bridge service</string>
+
+    <string name="title_ssh_connections">SSH Connections</string>
+    <string name="title_trusted_pcs">Trusted PCs</string>
+
+    <string name="notif_action_stop">Stop</string>
 </resources>
