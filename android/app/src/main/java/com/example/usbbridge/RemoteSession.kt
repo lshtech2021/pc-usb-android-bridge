@@ -12,7 +12,8 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 
 /**
- * JSch SSH session. Auth prompts (password / MFA keyboard-interactive) go through [prompt] on the phone.
+ * SSH session via mwiede JSch (OpenSSH + PEM keys, ed25519, rsa-sha2).
+ * Auth prompts (password / MFA keyboard-interactive) go through [prompt] on the phone.
  */
 class RemoteSession(
     private val hostKeys: TofuHostKeys,

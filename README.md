@@ -125,7 +125,7 @@ To send text from the phone: type the content in the app → "Send text to PC" (
 
 SSH secrets never leave the phone. Workflow:
 
-1. On the phone: **SSH Connections** → Add a profile (`ID_01`…) with host/user/password or private key. Check **MFA** if the server uses Google Authenticator / keyboard-interactive.
+1. On the phone: **SSH Connections** → Add a profile (`ID_01`…) with host/user/password and/or private key (**PEM or OpenSSH**, including ed25519 — pick file or paste). Check **MFA** if the server uses Google Authenticator / keyboard-interactive.
 2. Tap **Start** on that profile. First-time host keys: confirm the fingerprint dialog on the phone. MFA codes are entered on the phone when prompted.
 3. On the PC (USB connected): Remote Terminal → **Refresh list** → select a **running** ID → **Attach**.
 4. Use the interactive terminal (raw keys, ANSI via pyte — suitable for shell scripts, `vim`/`nano`, etc.). **Detach** leaves the phone SSH session running; **Stop** on the phone ends it.
@@ -173,10 +173,10 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | `PC_ALREADY_CONNECTED` | Another session with the same PC fingerprint is already connected |
 | `PC_KEY_CHANGED` | Saved PC fingerprint’s pubkey changed — Forget that PC on the phone and re-approve |
 | `CONN_NOT_RUNNING` / `CONN_BUSY` | Start the connection on the phone first; only one PC attach per ID |
-| `AUTH_FAILED` | Wrong username/password/private key or MFA code on the phone. **JSch 0.1.55 does not support the newer OpenSSH key format** (`-----BEGIN OPENSSH PRIVATE KEY-----`) or ed25519 keys; convert to PEM/PKCS#8: `ssh-keygen -p -m PEM -f id_rsa` |
+| `AUTH_FAILED` | Wrong username/password/private key or MFA code on the phone |
 | Host trust dialog on phone | First connection to that host; verify the fingerprint, then Trust |
 | `HOST_KEY_CHANGED` | Host key changed or possible MITM; clear phone known_hosts after investigating |
-| `Algorithm negotiation fail` | JSch 0.1.55 supports only `ssh-rsa(SHA-1)`, `ssh-dss`, and `ecdsa-sha2-*` host key algorithms. If the target server offers only ed25519 or has ssh-rsa disabled per the OpenSSH 8.8+ default, negotiation fails. Two ways out: ① in `app/build.gradle` switch to the community fork `implementation 'com.github.mwiede:jsch:0.2.17'` (API-compatible, supports rsa-sha2/ed25519); ② add `HostKeyAlgorithms +ssh-rsa` and `PubkeyAcceptedAlgorithms +ssh-rsa` to the target server's `sshd_config` and restart sshd |
+| `Algorithm negotiation fail` | Rare with modern JSch fork (`com.github.mwiede:jsch`); ensure the phone can reach the host and the server allows a mutually supported algorithm |
 | Text messages lag during large file transfers | Chunked file writes within a single connection are synchronous, a known limitation (nothing is lost; see prd §8); avoid chatting while sending large files |
 
 ---

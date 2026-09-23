@@ -37,5 +37,6 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.16.0'
     implementation 'androidx.documentfile:documentfile:1.0.1'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
-    implementation 'com.jcraft:jsch:0.1.55'
+    // Community JSch fork: OpenSSH private keys, ed25519, rsa-sha2 (same com.jcraft.jsch API)
+    implementation 'com.github.mwiede:jsch:2.28.7'
 }

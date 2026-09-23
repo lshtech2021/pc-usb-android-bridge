@@ -37,12 +37,13 @@ class ConnectionsActivity : AppCompatActivity() {
                 }
                 field.setText(pem)
                 updateKeyStatus(pem)
-                if (!looksLikePem(pem)) {
-                    toast("Loaded file — does not look like a PEM private key")
-                } else if (pem.contains("BEGIN OPENSSH PRIVATE KEY")) {
-                    toast("OpenSSH format may not work with JSch; convert to PEM/PKCS#8")
-                } else {
-                    toast("PEM key loaded")
+                when {
+                    !looksLikePem(pem) ->
+                        toast("Loaded file — does not look like a private key")
+                    pem.contains("BEGIN OPENSSH PRIVATE KEY") ->
+                        toast("OpenSSH private key loaded")
+                    else ->
+                        toast("PEM private key loaded")
                 }
             }
             .onFailure { e -> toast("Failed to read file: ${e.message}") }
@@ -177,9 +178,9 @@ class ConnectionsActivity : AppCompatActivity() {
         }
         val key = EditText(this).apply {
             hint = if (existing?.privateKey != null) {
-                "Private key PEM (blank = keep existing)"
+                "Private key (blank = keep existing)"
             } else {
-                "Private key PEM (paste or pick file)"
+                "Private key: PEM or OpenSSH (paste or pick file)"
             }
             minLines = 4
             inputType = InputType.TYPE_CLASS_TEXT or
@@ -192,7 +193,7 @@ class ConnectionsActivity : AppCompatActivity() {
             text = when {
                 existing?.privateKey != null ->
                     "Saved key on file (${existing.privateKey.length} chars). Paste/pick to replace."
-                else -> "No key loaded. Pick a .pem file or paste PEM text."
+                else -> "No key loaded. Pick a key file or paste PEM / OpenSSH text."
             }
         }
         pendingKeyField = key
@@ -200,7 +201,7 @@ class ConnectionsActivity : AppCompatActivity() {
 
         val keyActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         keyActions.addView(Button(this).apply {
-            text = "Pick PEM file"
+            text = "Pick key file"
             setOnClickListener {
                 pickPem.launch(arrayOf(
                     "application/x-pem-file",
@@ -212,7 +213,7 @@ class ConnectionsActivity : AppCompatActivity() {
             }
         })
         keyActions.addView(Button(this).apply {
-            text = "Paste PEM"
+            text = "Paste key"
             setOnClickListener {
                 val clip = readClipboardText()
                 if (clip.isNullOrBlank()) {
@@ -223,10 +224,11 @@ class ConnectionsActivity : AppCompatActivity() {
                 updateKeyStatus(clip)
                 when {
                     clip.contains("BEGIN OPENSSH PRIVATE KEY") ->
-                        toast("OpenSSH format may not work; convert to PEM/PKCS#8")
-                    !looksLikePem(clip) ->
-                        toast("Pasted text does not look like a PEM private key")
-                    else -> toast("PEM pasted from clipboard")
+                        toast("OpenSSH private key pasted")
+                    looksLikePem(clip) ->
+                        toast("PEM private key pasted")
+                    else ->
+                        toast("Pasted text does not look like a private key")
                 }
             }
         })
@@ -266,7 +268,7 @@ class ConnectionsActivity : AppCompatActivity() {
             addView(password)
             addView(showPassword)
             addView(TextView(this@ConnectionsActivity).apply {
-                text = "Private key (PEM)"
+                text = "Private key (PEM or OpenSSH)"
                 setPadding(0, 16, 0, 4)
             })
             addView(keyActions)
@@ -290,7 +292,7 @@ class ConnectionsActivity : AppCompatActivity() {
                 val keyIn = key.text.toString().trim()
                 val phraseIn = phrase.text.toString()
                 if (keyIn.isNotEmpty() && !looksLikePem(keyIn)) {
-                    toast("Warning: key does not look like PEM — saved anyway")
+                    toast("Warning: key does not look like PEM/OpenSSH — saved anyway")
                 }
                 val saved = ConnectionStore.Profile(
                     id = id,
@@ -328,11 +330,11 @@ class ConnectionsActivity : AppCompatActivity() {
     private fun updateKeyStatus(pem: String) {
         pendingKeyStatus?.text = when {
             pem.contains("BEGIN OPENSSH PRIVATE KEY") ->
-                "Loaded OpenSSH key (${pem.length} chars) — convert to PEM for JSch"
+                "Loaded OpenSSH key (${pem.length} chars)"
             looksLikePem(pem) ->
                 "Loaded PEM key (${pem.length} chars)"
             else ->
-                "Loaded text (${pem.length} chars) — may not be PEM"
+                "Loaded text (${pem.length} chars) — may not be a private key"
         }
     }
 
