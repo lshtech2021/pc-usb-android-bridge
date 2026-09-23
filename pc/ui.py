@@ -4,7 +4,7 @@ Run: py ui.py
 """
 import sys
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import pyqtSignal, Qt
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QComboBox, QPushButton, QLabel, QTabWidget, QPlainTextEdit,
     QLineEdit, QProgressBar, QFileDialog, QMessageBox, QTableWidget,
@@ -92,11 +92,18 @@ class MainWindow(QMainWindow):
     # ---- Tab1 Messages ----
     def _msg_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
-        self.msg_view = QPlainTextEdit(); self.msg_view.setReadOnly(True)
+        self.msg_view = QPlainTextEdit()
+        self.msg_view.setReadOnly(True)
+        self.msg_view.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         h = QHBoxLayout()
         self.msg_input = QLineEdit(); self.msg_input.returnPressed.connect(self.send_text)
         b = QPushButton("Send"); b.clicked.connect(self.send_text)
-        h.addWidget(self.msg_input, 1); h.addWidget(b)
+        b_copy = QPushButton("Copy all")
+        b_copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.msg_view.toPlainText()))
+        h.addWidget(self.msg_input, 1); h.addWidget(b); h.addWidget(b_copy)
+        v.addWidget(QLabel("Messages (select text to copy, or Copy all)"))
         v.addWidget(self.msg_view, 1); v.addLayout(h)
         return w
 
@@ -189,8 +196,8 @@ class MainWindow(QMainWindow):
         self.term.bytes_out.connect(self._term_bytes)
         v.addWidget(self.term, 1)
         v.addWidget(QLabel(
-            "Interactive terminal (pyte). Start SSH on the phone (SSH Connections), "
-            "then Attach by ID. Keys are sent raw (vim/nano/scripts supported)."))
+            "Interactive terminal (pyte). Copy: Ctrl+Shift+C or selection+Ctrl+C; "
+            "Paste: Ctrl+Shift+V / Ctrl+V. Right-click for menu."))
         return w
 
     def refresh_connections(self):

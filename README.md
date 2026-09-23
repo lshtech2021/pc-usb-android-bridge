@@ -175,8 +175,9 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | `CONN_NOT_RUNNING` / `CONN_BUSY` | Start the connection on the phone first; only one PC attach per ID |
 | `AUTH_FAILED` | Wrong username/password/private key or MFA code on the phone |
 | Host trust dialog on phone | First connection to that host; verify the fingerprint, then Trust |
-| `HOST_KEY_CHANGED` | Host key differs from the trusted one — verify the new fingerprint, then **Forget & re-trust** on the dialog, or **Forget host key** / **Clear all host keys** in SSH Connections |
-| `Algorithm negotiation fail` | Rare with modern JSch fork (`com.github.mwiede:jsch`); ensure the phone can reach the host and the server allows a mutually supported algorithm |
+| `HOST_KEY_CHANGED` | Host key differs from the trusted one — verify the new fingerprint, then **Forget & re-trust** on the dialog, or **Forget host key** / **Clear all host keys** in SSH Connections. After upgrading to ed25519-preferred host keys, **Forget** the old entry and Trust again so the fingerprint matches `ssh -vvv` (`ssh-ed25519 SHA256:…`) |
+| `Algorithm negotiation fail` | Rare with mwiede JSch + Bouncy Castle; ensure the phone can reach the host |
+| `Auth failed for method 'publickey'` | Wrong key/user, missing key passphrase (enter in profile or at Start prompt), or public key not in server `authorized_keys`. Encrypted ed25519 keys need the correct passphrase |
 | Text messages lag during large file transfers | Chunked file writes within a single connection are synchronous, a known limitation (nothing is lost; see prd §8); avoid chatting while sending large files |
 
 ---
