@@ -23,7 +23,7 @@ Build a client on the PC side that communicates with a phone-side service over U
 | F7 | Host fingerprint confirmation on first connection | When the target host is unknown, the connection is refused and the fingerprint is returned; after PC-side confirmation it is written to the phone's known_hosts and no longer asked |
 | F8 | Host key change protection | When the target host fingerprint does not match the known one, the connection is **refused** and an alarm is raised; silently continuing is not allowed |
 | F9 | Device discovery and connection management | List adb online devices, connect, disconnect (disconnect also clears adb forward and local partial files) |
-| F10 | Link authentication | Connections without the correct token are rejected and closed |
+| F10 | Link authentication | Correct token required; unknown PC fingerprint requires phone Approve; only one live session per PC fingerprint; post-HELLO frames AES-GCM sealed |
 | F11 | Heartbeat keepalive | 15s heartbeat on both sides; when the network thread exits abnormally the UI clearly shows "connection closed" |
 
 ### 1.3 Non-functional requirements
@@ -90,7 +90,7 @@ The most reliable way to carry USB communication at the application layer is **A
 
 | type | Value | Direction | Description |
 |---|---|---|---|
-| HELLO / ACK | 0x00 / 0x20 | PC→phone / reply | Handshake, header: `{client, version, token}`; the phone verifies the token |
+| HELLO / ACK | 0x00 / 0x20 | PC→phone / reply | HELLO: `{client, version, token, pc_id, pc_name, pc_pubkey, eph_pub}`; ACK: `{ok, device, eph_pub}` then AES-GCM seal |
 | TEXT | 0x01 | Bidirectional | header: `{id, text}` |
 | FILE_META / CHUNK / END | 0x02/03/04 | Bidirectional | Chunked file transfer, SHA256 verified on both ends |
 | REMOTE_OPEN | 0x10 | PC→phone | Legacy/internal: `{channel, kind: ssh/exec, host, …credentials…}`. Product path uses phone-managed profiles + `CONN_ATTACH` instead |
@@ -110,6 +110,9 @@ The most reliable way to carry USB communication at the application layer is **A
 |---|---|
 | `BAD_TOKEN` | Handshake token mismatch (the phone then disconnects) |
 | `BAD_FRAME` | Frame parse failure (bad magic/length); the current implementation closes the connection directly, this code is reserved |
+| `PC_REJECTED` | User denied the PC Approve dialog |
+| `PC_ALREADY_CONNECTED` | Another live session already holds this `pc_id` |
+| `PC_KEY_CHANGED` | Trusted `pc_id` presented a different pubkey |
 | `UNKNOWN_HOST` | Target host fingerprint is not in the known-hosts store (managed Start: confirm on phone) |
 | `CONN_NOT_RUNNING` | `CONN_ATTACH` for an ID that is not live |
 | `CONN_BUSY` | Another PC channel is already attached to that connection (v1: one attach) |
@@ -1357,11 +1360,12 @@ class MainActivity : AppCompatActivity() {
 
 | Boundary | Current state | Notes |
 |---|---|---|
-| PC ↔ phone link | `adb forward` opens the port only on the PC's 127.0.0.1; the phone's `ServerSocket` binds to `127.0.0.1` | Other apps on the device cannot connect directly; other local processes on the PC can still reach the forwarded port, which is why a token is added on top |
-| Link authentication | HELLO carries an 8-hex-digit random token (regenerated on every service start, shown in the phone's notification bar and UI) | A wrong token → `ERROR{BAD_TOKEN}` and immediate disconnect; the token only guards against "other processes on the device", not against someone who can read the screen |
+| PC ↔ phone link | `adb forward` opens the port only on the PC's 127.0.0.1; the phone's `ServerSocket` binds to `127.0.0.1` | Other apps on the device cannot connect directly; other local processes on the PC can still reach the forwarded port, which is why a token + PC TOFU + AES-GCM are added on top |
+| Link authentication | HELLO carries token + persistent PC pubkey fingerprint (`pc_id`); phone Approves unknown PCs (TOFU); one live session per `pc_id` | Wrong token → `BAD_TOKEN`; reject → `PC_REJECTED`; duplicate → `PC_ALREADY_CONNECTED`; pubkey change → `PC_KEY_CHANGED` |
+| Link encryption | After ACK: P-256 ECDH + HKDF-SHA256(token‖shared) → AES-GCM on all later frames | HELLO/ACK remain cleartext on loopback (USB-only scope). Does **not** stop a compromised PC OS or screen recording |
 | Credentials | Product path: profiles stored in phone EncryptedSharedPreferences (Keystore); MFA answered on phone Start; **PC never receives SSH secrets** | Legacy `REMOTE_OPEN` with credentials over USB is not the product UI path |
 | Host identity | TOFU for managed Starts: fingerprint confirmed on the **phone**, then written to phone `known_hosts`; later connections compare strictly | A fingerprint change (suspected MITM) is refused outright with no "ignore" option; format is OpenSSH `SHA256:...` |
-| Plaintext transport | The frame protocol itself is not encrypted | The link is USB + loopback, with no secondary encryption; to work across an untrusted environment, AES-GCM can be added around the `payload` (see §8) |
+| Plaintext transport | Superseded for post-HELLO frames by AES-GCM seal | HELLO still cleartext; see link encryption row |
 
 ## 8. Known Limitations and Extensibility Points
 
@@ -1375,7 +1379,7 @@ class MainActivity : AppCompatActivity() {
 | **Multi-device / multi-session** | The server supports multiple connections, but the PC connects to only one device at a time; multiple devices require forwarding each serial to a different local port on the PC |
 | **App-free alternative** | Install Termux on the phone and run `sshd`, then after `adb forward` the PC first SSHes into the phone and from there SSHes to the target — quick to validate, but no custom UI or file management |
 | **adb-free approach** | Requires phone root or system-level support (e.g. an automotive head unit / custom ROM exposing TCP directly); otherwise ADB is the standard approach |
-| **Channel encryption** | To use it over an untrusted network, apply AES-GCM to the `TEXT`/`FILE_*`/`REMOTE_*` payloads, with the key derived from the token (HKDF) |
+| **Channel encryption** | Implemented for post-HELLO USB frames (ECDH + AES-GCM). HELLO remains cleartext. Not a defense against OS compromise on the PC |
 
 ## 9. Change Log (relative to the initial version)
 

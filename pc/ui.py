@@ -61,13 +61,19 @@ class MainWindow(QMainWindow):
         self.cmb = QComboBox()
         self.ed_token = QLineEdit()
         self.ed_token.setPlaceholderText("Phone token")
+        self.ed_token.setEchoMode(QLineEdit.Password)
         self.ed_token.setFixedWidth(130)
+        self.ed_pc_name = QLineEdit()
+        self.ed_pc_name.setPlaceholderText("PC display name")
+        self.ed_pc_name.setText(self.client.identity.pc_name)
+        self.ed_pc_name.setFixedWidth(140)
         b1 = QPushButton("Refresh Devices"); b1.clicked.connect(self.refresh)
         b2 = QPushButton("Connect"); b2.clicked.connect(self.connect_phone)
         b3 = QPushButton("Disconnect"); b3.clicked.connect(self.disconnect_phone)
         self.lbl = QLabel("Not connected")
         top.addWidget(QLabel("Device:")); top.addWidget(self.cmb, 1)
         top.addWidget(QLabel("Token:")); top.addWidget(self.ed_token)
+        top.addWidget(QLabel("PC name:")); top.addWidget(self.ed_pc_name)
         top.addWidget(b1); top.addWidget(b2); top.addWidget(b3); top.addWidget(self.lbl)
 
         self.tabs = QTabWidget()
@@ -75,7 +81,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._file_tab(), "Files")
         self.tabs.addTab(self._term_tab(), "Remote Terminal")
         root = QWidget(); lay = QVBoxLayout(root)
-        lay.addLayout(top); lay.addWidget(self.tabs, 1)
+        lay.addLayout(top)
+        lay.addWidget(QLabel(
+            f"PC fingerprint: {self.client.identity.short_id}… "
+            "(private key never shown; approve this PC on the phone when prompted)"))
+        lay.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
         self.refresh()
 
@@ -104,14 +114,17 @@ class MainWindow(QMainWindow):
     def _on_status(self, s):
         self.msg_view.appendPlainText(s)
         low = s.lower()
-        if "[connection closed]" in low or "bad_token" in low:
+        if ("[connection closed]" in low or "bad_token" in low
+                or "pc_rejected" in low or "pc_already_connected" in low
+                or "pc_key_changed" in low):
             self.lbl.setText("Not connected")
             self._reset_attach()
 
     def _hello_ack(self, info):
         serial = self.cmb.currentData() or "?"
-        self.lbl.setText("Connected " + str(serial))
-        self.msg_view.appendPlainText(f"[Phone connected: {info.get('device', '?')}]")
+        self.lbl.setText("Connected " + str(serial) + " (encrypted)")
+        self.msg_view.appendPlainText(
+            f"[Phone connected: {info.get('device', '?')}] link sealed")
         self.client.list_connections()
 
     # ---- Tab2 Files ----
@@ -274,9 +287,12 @@ class MainWindow(QMainWindow):
                 self, "Notice",
                 "Please refresh and select a device first (USB debugging must be enabled and authorized)")
         try:
+            name = self.ed_pc_name.text().strip()
+            if name:
+                self.client.identity.set_name(name)
             self.adb.forward(serial, PC_PORT, PHONE_PORT)
-            self.lbl.setText("Connecting...")
-            self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text().strip())
+            self.lbl.setText("Connecting… approve on phone if prompted")
+            self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text())
         except Exception as e:
             self.lbl.setText("Not connected")
             QMessageBox.critical(self, "Connection failed", str(e))

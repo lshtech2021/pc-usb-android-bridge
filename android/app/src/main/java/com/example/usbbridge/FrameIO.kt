@@ -25,17 +25,35 @@ object FrameIO {
 
     data class Frame(val type: Int, val header: JSONObject, val payload: ByteArray)
 
-    fun encode(type: Int, header: JSONObject, payload: ByteArray = ByteArray(0)): ByteArray {
+    fun encode(type: Int, header: JSONObject, payload: ByteArray = ByteArray(0),
+               seal: LinkCrypto.Seal? = null): ByteArray {
         val h = header.toString().toByteArray(Charsets.UTF_8)
-        return ByteArray(9 + h.size + payload.size).apply {
+        if (seal == null) {
+            return ByteArray(9 + h.size + payload.size).apply {
+                var i = 0
+                fun u1(v: Int) { this[i++] = v.toByte() }
+                fun u2(v: Int) { u1(v shr 8); u1(v) }
+                fun u4(v: Int) { u2(v shr 16); u2(v) }
+                u1(0xAB); u1(0xCD); u1(type); u2(h.size)
+                h.copyInto(this, i); i += h.size
+                u4(payload.size); payload.copyInto(this, i)
+            }
+        }
+        val ct = seal.sealPayload(type, h, payload)
+        return ByteArray(9 + ct.size).apply {
             var i = 0
             fun u1(v: Int) { this[i++] = v.toByte() }
             fun u2(v: Int) { u1(v shr 8); u1(v) }
             fun u4(v: Int) { u2(v shr 16); u2(v) }
-            u1(0xAB); u1(0xCD); u1(type); u2(h.size)
-            h.copyInto(this, i); i += h.size          // Must write at cursor i, not a hardcoded offset
-            u4(payload.size); payload.copyInto(this, i)
+            u1(0xAB); u1(0xCD); u1(type); u2(0)
+            u4(ct.size); ct.copyInto(this, i)
         }
+    }
+
+    fun unseal(frame: Frame, seal: LinkCrypto.Seal): Frame {
+        val (hb, pb) = seal.unsealPayload(frame.type, frame.payload)
+        val header = if (hb.isNotEmpty()) JSONObject(String(hb, Charsets.UTF_8)) else JSONObject()
+        return Frame(frame.type, header, pb)
     }
 
     fun readFrame(input: InputStream): Frame? {

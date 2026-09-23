@@ -32,21 +32,34 @@ class ErrCode:
     CONN_NOT_RUNNING = "CONN_NOT_RUNNING"
     CONN_BUSY = "CONN_BUSY"
     CONN_NOT_FOUND = "CONN_NOT_FOUND"
+    PC_REJECTED = "PC_REJECTED"
+    PC_ALREADY_CONNECTED = "PC_ALREADY_CONNECTED"
+    PC_KEY_CHANGED = "PC_KEY_CHANGED"
 
 
-def encode_frame(msg_type: int, header: dict, payload: bytes = b"") -> bytes:
+def encode_frame(msg_type: int, header: dict, payload: bytes = b"", seal=None) -> bytes:
     # Omit None values — Android JSONObject.optString turns JSON null into the string "null"
     clean = {k: v for k, v in header.items() if v is not None}
     h = json.dumps(clean, ensure_ascii=False).encode("utf-8")
-    return (MAGIC + struct.pack(">BH", msg_type, len(h))
-            + h + struct.pack(">I", len(payload)) + payload)
+    if seal is None:
+        return (MAGIC + struct.pack(">BH", msg_type, len(h))
+                + h + struct.pack(">I", len(payload)) + payload)
+    # Post-auth: empty outer header; payload = AES-GCM(inner header+payload)
+    ct = seal.seal_payload(msg_type, h, payload)
+    return MAGIC + struct.pack(">BH", msg_type, 0) + struct.pack(">I", len(ct)) + ct
 
 
-def decode_frame(read):
+def decode_frame(read, seal=None):
     """read(n) must return exactly n bytes, otherwise it raises an exception."""
     if read(2) != MAGIC:
         raise IOError("protocol magic mismatch")
     msg_type, hlen = struct.unpack(">BH", read(3))   # type 1B + headerLen 2B
-    header = json.loads(read(hlen).decode("utf-8")) if hlen else {}
+    header_raw = read(hlen) if hlen else b""
     (plen,) = struct.unpack(">I", read(4))
-    return msg_type, header, (read(plen) if plen else b"")
+    payload = read(plen) if plen else b""
+    if seal is None:
+        header = json.loads(header_raw.decode("utf-8")) if header_raw else {}
+        return msg_type, header, payload
+    hb, pb = seal.unseal_payload(msg_type, payload)
+    header = json.loads(hb.decode("utf-8")) if hb else {}
+    return msg_type, header, pb

@@ -1,4 +1,4 @@
-"""TCP transport layer: connect, send/receive frames, disconnect callback."""
+"""TCP transport layer: connect, send/receive frames, optional post-HELLO AES-GCM seal."""
 import socket
 import threading
 
@@ -11,6 +11,7 @@ class Transport:
         self.on_frame, self.on_disconnect = on_frame, on_disconnect
         self.sock, self._running = None, False
         self._send_lock = threading.Lock()
+        self._seal = None
 
     @property
     def alive(self):
@@ -22,8 +23,12 @@ class Transport:
         self._running = True
         threading.Thread(target=self._recv_loop, daemon=True).start()
 
+    def enable_seal(self, seal):
+        """Enable AES-GCM for all subsequent frames (call from ACK handler before next decode)."""
+        self._seal = seal
+
     def send(self, msg_type, header, payload=b""):
-        data = encode_frame(msg_type, header, payload)
+        data = encode_frame(msg_type, header, payload, seal=self._seal)
         with self._send_lock:
             self.sock.sendall(data)
 
@@ -45,7 +50,7 @@ class Transport:
 
         try:
             while self._running:
-                t, h, p = decode_frame(read)
+                t, h, p = decode_frame(read, seal=self._seal)
                 self.on_frame and self.on_frame(t, h, p)
         except Exception:
             pass

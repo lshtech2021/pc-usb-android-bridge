@@ -6,7 +6,10 @@ import hashlib
 import os
 import threading
 import time
+from base64 import b64decode, b64encode
 
+from identity import PcIdentity
+from link_crypto import LinkSeal, derive_session_key, ecdh, generate_keypair
 from protocol import ErrCode, MsgType
 from transport import Transport
 
@@ -38,20 +41,32 @@ class PhoneClient:
         self._recv, self.channels = {}, {}
         self.save_dir = os.path.abspath("downloads")
         os.makedirs(self.save_dir, exist_ok=True)
+        self.identity = PcIdentity.load_or_create()
+        self._pending_eph_priv = None
+        self._pending_token = ""
 
     # ---------- Connection ----------
     def connect(self, host="127.0.0.1", port=12580, token=""):
         self.close(silent=True)                # drop prior transport without status noise
+        self._pending_token = token or ""
+        self._pending_eph_priv, eph_pub = generate_keypair()
         self.tp = Transport(host, port, self._on_frame, self._on_disconnect)
         self.tp.start()
         self._last_pong = time.monotonic()
-        self.tp.send(MsgType.HELLO, {"client": "pc-client", "version": 1, "token": token})
-        self._hb_gen += 1
-        gen = self._hb_gen
-        threading.Thread(target=self._heartbeat, args=(gen,), daemon=True).start()
+        self.tp.send(MsgType.HELLO, {
+            "client": "pc-client",
+            "version": 2,
+            "token": token,
+            "pc_id": self.identity.pc_id,
+            "pc_name": self.identity.pc_name,
+            "pc_pubkey": self.identity.pub_b64(),
+            "eph_pub": b64encode(eph_pub).decode("ascii"),
+        })
+        # Heartbeat starts only after ACK + seal (see _on_frame)
 
     def close(self, silent=False):
         self._hb_gen += 1                      # stop any running heartbeat loop
+        self._pending_eph_priv = None
         if self.tp:
             old = self.tp
             self.tp = None
@@ -206,6 +221,29 @@ class PhoneClient:
                 self.on_text and self.on_text(h.get("text", ""))
             elif t == M.ACK:
                 if "device" in h:
+                    eph_b64 = h.get("eph_pub")
+                    if eph_b64 and self._pending_eph_priv and self.tp:
+                        try:
+                            shared = ecdh(self._pending_eph_priv, b64decode(eph_b64))
+                            key = derive_session_key(
+                                shared, self._pending_token, self.identity.pc_id)
+                            self.tp.enable_seal(LinkSeal(key))
+                            self._pending_eph_priv = None
+                            self._last_pong = time.monotonic()
+                            self._hb_gen += 1
+                            gen = self._hb_gen
+                            threading.Thread(
+                                target=self._heartbeat, args=(gen,), daemon=True).start()
+                        except Exception as e:
+                            self.on_status and self.on_status(
+                                f"[Error] link crypto failed: {e}")
+                            self.close()
+                            return
+                    elif self._pending_eph_priv:
+                        self.on_status and self.on_status(
+                            "[Error] phone ACK missing eph_pub (upgrade phone app)")
+                        self.close()
+                        return
                     self.on_hello_ack and self.on_hello_ack(h)
                 elif "file_id" in h:
                     fid = h["file_id"]

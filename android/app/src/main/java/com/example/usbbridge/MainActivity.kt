@@ -1,5 +1,6 @@
 package com.example.usbbridge
 
+import android.app.AlertDialog
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -76,6 +77,10 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, ConnectionsActivity::class.java))
             }
         }
+        val trustedPcs = Button(this).apply {
+            text = "Trusted PCs"
+            setOnClickListener { showTrustedPcs() }
+        }
         val chooseFolder = Button(this).apply { text = "Choose save folder" }
         val resetFolder = Button(this).apply { text = "Use app default folder" }
         val sendText = Button(this).apply { text = "Send text to PC" }
@@ -129,6 +134,7 @@ class MainActivity : AppCompatActivity() {
             addView(info)
             addView(start)
             addView(connections)
+            addView(trustedPcs)
             addView(saveFolderLabel)
             addView(chooseFolder)
             addView(resetFolder)
@@ -154,6 +160,37 @@ class MainActivity : AppCompatActivity() {
         AuthPrompts.unbind(this)
         BridgeService.removeTextListener(onPcText)
         super.onStop()
+    }
+
+    private fun showTrustedPcs() {
+        val entries = PcTrustStore.list(this)
+        if (entries.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Trusted PCs")
+                .setMessage("No trusted PCs yet. Approve a PC when it connects.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val labels = entries.map {
+            "${it.pcName}\n${LinkCrypto.shortId(it.pcId)}…"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Trusted PCs — tap to forget")
+            .setItems(labels) { _, which ->
+                val e = entries[which]
+                AlertDialog.Builder(this)
+                    .setTitle("Forget PC?")
+                    .setMessage("Forget \"${e.pcName}\" (${LinkCrypto.shortId(e.pcId)}…)?\nNext connect will ask again.")
+                    .setPositiveButton("Forget") { _, _ ->
+                        PcTrustStore.forget(this, e.pcId)
+                        appendMsg("Forgot PC ${e.pcName}")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun refreshSaveFolderLabel() {

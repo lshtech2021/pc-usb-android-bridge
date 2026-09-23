@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -119,6 +120,17 @@ class BridgeService : Service() {
         fun addSession(s: SessionHandler) { sessions.add(s) }
         fun removeSession(s: SessionHandler) { sessions.remove(s) }
 
+        /** One live USB session per PC fingerprint; reject additional HELLO with same pc_id. */
+        private val activePcs = ConcurrentHashMap<String, SessionHandler>()
+
+        fun tryClaimPc(pcId: String, handler: SessionHandler): Boolean =
+            activePcs.putIfAbsent(pcId, handler) == null
+
+        fun releasePc(pcId: String?, handler: SessionHandler) {
+            if (pcId.isNullOrEmpty()) return
+            activePcs.remove(pcId, handler)
+        }
+
         /** Phone-side text/file send: reuse the already-established connection. Returns false if no session. */
         fun broadcastText(text: String): Boolean {
             if (sessions.isEmpty()) return false
@@ -207,11 +219,17 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     @Volatile private var closed = false
     @Volatile private var authed = false
     private var pingThread: Thread? = null
+    private var seal: LinkCrypto.Seal? = null
+    private var claimedPcId: String? = null
 
     override fun run() {
         try {
             val input = sock.getInputStream()
-            while (!closed) handle(FrameIO.readFrame(input) ?: break)
+            while (!closed) {
+                val raw = FrameIO.readFrame(input) ?: break
+                val f = seal?.let { FrameIO.unseal(raw, it) } ?: raw
+                handle(f)
+            }
         } catch (e: Exception) {
             if (!closed) e.printStackTrace()
         } finally {
@@ -221,7 +239,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
     fun send(type: Int, header: JSONObject, payload: ByteArray = ByteArray(0)) {
         if (closed) return
-        val data = FrameIO.encode(type, header, payload)
+        val data = FrameIO.encode(type, header, payload, seal)
         synchronized(outLock) {
             out.write(data)
             out.flush()
@@ -242,19 +260,91 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         }, "bridge-ping").apply { isDaemon = true; start() }
     }
 
+    private fun handleHello(h: JSONObject) {
+        if (h.optString("token") != BridgeService.token) {
+            send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN")
+                .put("message", "token verification failed"))
+            close()
+            return
+        }
+        val pcId = h.optString("pc_id")
+        val pcName = h.optString("pc_name").ifBlank { "PC" }
+        val pcPubkey = h.optString("pc_pubkey")
+        val ephPubB64 = h.optString("eph_pub")
+        if (pcId.isEmpty() || pcPubkey.isEmpty() || ephPubB64.isEmpty()) {
+            send(FrameIO.ERROR, JSONObject().put("code", "BAD_FRAME")
+                .put("message", "HELLO missing pc_id / pc_pubkey / eph_pub"))
+            close()
+            return
+        }
+        if (!BridgeService.tryClaimPc(pcId, this)) {
+            send(FrameIO.ERROR, JSONObject().put("code", "PC_ALREADY_CONNECTED")
+                .put("message", "another session with this PC fingerprint is already connected"))
+            close()
+            return
+        }
+        claimedPcId = pcId
+
+        val known = PcTrustStore.get(ctx, pcId)
+        when {
+            known == null -> {
+                val short = LinkCrypto.shortId(pcId)
+                val ok = AuthPrompts.promptYesNo(
+                    "Approve PC",
+                    "PC \"$pcName\" wants to connect.\n\nFingerprint:\n$short…\n\n" +
+                        "Trust this PC? Secrets and private keys are never shown.")
+                if (!ok) {
+                    send(FrameIO.ERROR, JSONObject().put("code", "PC_REJECTED")
+                        .put("message", "user rejected this PC"))
+                    close()
+                    return
+                }
+                PcTrustStore.trust(ctx, pcId, pcName, pcPubkey)
+            }
+            known.pcPubkeyB64 != pcPubkey -> {
+                send(FrameIO.ERROR, JSONObject().put("code", "PC_KEY_CHANGED")
+                    .put("message", "PC fingerprint pubkey changed; forget the PC on the phone and re-approve"))
+                close()
+                return
+            }
+            known.pcName != pcName -> PcTrustStore.trust(ctx, pcId, pcName, pcPubkey)
+        }
+
+        try {
+            val phoneEph = LinkCrypto.generateKeyPair()
+            val peerEph = Base64.decode(ephPubB64, Base64.DEFAULT)
+            val shared = LinkCrypto.ecdh(phoneEph.private, peerEph)
+            val key = LinkCrypto.deriveSessionKey(shared, BridgeService.token, pcId)
+            val phoneEphB64 = Base64.encodeToString(
+                LinkCrypto.publicDer(phoneEph.public), Base64.NO_WRAP)
+            // ACK is cleartext; enable seal afterward for all later frames
+            send(FrameIO.ACK, JSONObject()
+                .put("ok", true)
+                .put("device", Build.MODEL)
+                .put("eph_pub", phoneEphB64))
+            seal = LinkCrypto.Seal(key)
+            authed = true
+            startPingLoop()
+            AuthPrompts.toast(ctx, "PC connected: $pcName (${LinkCrypto.shortId(pcId)}…)")
+        } catch (e: Exception) {
+            send(FrameIO.ERROR, JSONObject().put("code", "BAD_FRAME")
+                .put("message", e.message ?: "handshake crypto failed"))
+            close()
+        }
+    }
+
     private fun JSONObject.optNullableString(key: String): String? =
         if (has(key) && !isNull(key)) optString(key) else null
 
     private fun handle(f: FrameIO.Frame) {
         with(f.header) {
-            // The first frame must be a HELLO with the correct token, otherwise reject
+            // The first frame must be a HELLO with the correct token + PC identity
             if (!authed) {
-                if (f.type == FrameIO.HELLO && optString("token") == BridgeService.token) {
-                    authed = true
-                    send(FrameIO.ACK, JSONObject().put("ok", true).put("device", Build.MODEL))
-                    startPingLoop()
+                if (f.type == FrameIO.HELLO) {
+                    handleHello(f.header)
                 } else {
-                    send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN").put("message", "token verification failed"))
+                    send(FrameIO.ERROR, JSONObject().put("code", "BAD_TOKEN")
+                        .put("message", "expected HELLO"))
                     close()
                 }
                 return
@@ -424,6 +514,8 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         closed = true
         pingThread?.interrupt()
         pingThread = null
+        BridgeService.releasePc(claimedPcId, this)
+        claimedPcId = null
         ConnectionHub.detachHandler(this)
         remoteOps.shutdownNow()
         remotes.values.forEach { it.close() }
