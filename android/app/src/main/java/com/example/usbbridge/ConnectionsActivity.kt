@@ -1,6 +1,11 @@
 package com.example.usbbridge
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
+import android.text.InputType
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -8,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
@@ -15,6 +21,32 @@ import androidx.appcompat.app.AppCompatActivity
 class ConnectionsActivity : AppCompatActivity() {
     private lateinit var listBox: LinearLayout
     private val refreshListener: () -> Unit = { runOnUiThread { renderList() } }
+
+    /** Filled by the open edit dialog; used when a PEM file is picked. */
+    private var pendingKeyField: EditText? = null
+    private var pendingKeyStatus: TextView? = null
+
+    private val pickPem = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val field = pendingKeyField ?: return@registerForActivityResult
+        if (uri == null) return@registerForActivityResult
+        runCatching { readPemFromUri(uri) }
+            .onSuccess { pem ->
+                if (pem.isBlank()) {
+                    toast("File is empty")
+                    return@onSuccess
+                }
+                field.setText(pem)
+                updateKeyStatus(pem)
+                if (!looksLikePem(pem)) {
+                    toast("Loaded file — does not look like a PEM private key")
+                } else if (pem.contains("BEGIN OPENSSH PRIVATE KEY")) {
+                    toast("OpenSSH format may not work with JSch; convert to PEM/PKCS#8")
+                } else {
+                    toast("PEM key loaded")
+                }
+            }
+            .onFailure { e -> toast("Failed to read file: ${e.message}") }
+    }
 
     override fun onCreate(s: Bundle?) {
         super.onCreate(s)
@@ -72,12 +104,19 @@ class ConnectionsActivity : AppCompatActivity() {
         profiles.forEach { p ->
             val state = ConnectionHub.stateOf(p.id)
             val err = ConnectionHub.lastError(p.id)
+            val authHint = when {
+                !p.privateKey.isNullOrBlank() && !p.password.isNullOrBlank() -> "key+password"
+                !p.privateKey.isNullOrBlank() -> "private key"
+                !p.password.isNullOrBlank() -> "password"
+                else -> "no auth secret"
+            }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(0, 16, 0, 8)
             }
             row.addView(TextView(this).apply {
-                text = "${p.id}  ${p.name}\n${p.user}@${p.host}:${p.port}\nState: $state" +
+                text = "${p.id}  ${p.name}\n${p.user}@${p.host}:${p.port}\n" +
+                    "Auth: $authHint · State: $state" +
                     if (!err.isNullOrBlank()) "\nError: $err" else ""
                 textSize = 15f
             })
@@ -120,25 +159,98 @@ class ConnectionsActivity : AppCompatActivity() {
             hint = "Host"; setText(existing?.host ?: "")
         }
         val port = EditText(this).apply {
-            hint = "Port"; setText((existing?.port ?: 22).toString()); inputType =
-                android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "Port"; setText((existing?.port ?: 22).toString())
+            inputType = InputType.TYPE_CLASS_NUMBER
         }
         val user = EditText(this).apply {
             hint = "Username"; setText(existing?.user ?: "")
         }
         val password = EditText(this).apply {
             hint = if (existing?.password != null) "Password (leave blank to keep)" else "Password"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val showPassword = CheckBox(this).apply {
+            text = "Show password"
+            setOnCheckedChangeListener { _, checked ->
+                setPasswordVisible(password, checked)
+            }
         }
         val key = EditText(this).apply {
-            hint = if (existing?.privateKey != null) "Private key PEM (blank = keep)" else "Private key PEM (optional)"
-            minLines = 3
+            hint = if (existing?.privateKey != null) {
+                "Private key PEM (blank = keep existing)"
+            } else {
+                "Private key PEM (paste or pick file)"
+            }
+            minLines = 4
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         }
+        val keyStatus = TextView(this).apply {
+            textSize = 13f
+            setPadding(0, 4, 0, 8)
+            text = when {
+                existing?.privateKey != null ->
+                    "Saved key on file (${existing.privateKey.length} chars). Paste/pick to replace."
+                else -> "No key loaded. Pick a .pem file or paste PEM text."
+            }
+        }
+        pendingKeyField = key
+        pendingKeyStatus = keyStatus
+
+        val keyActions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        keyActions.addView(Button(this).apply {
+            text = "Pick PEM file"
+            setOnClickListener {
+                pickPem.launch(arrayOf(
+                    "application/x-pem-file",
+                    "application/x-x509-ca-cert",
+                    "application/pkcs8",
+                    "text/plain",
+                    "*/*"
+                ))
+            }
+        })
+        keyActions.addView(Button(this).apply {
+            text = "Paste PEM"
+            setOnClickListener {
+                val clip = readClipboardText()
+                if (clip.isNullOrBlank()) {
+                    toast("Clipboard is empty")
+                    return@setOnClickListener
+                }
+                key.setText(clip)
+                updateKeyStatus(clip)
+                when {
+                    clip.contains("BEGIN OPENSSH PRIVATE KEY") ->
+                        toast("OpenSSH format may not work; convert to PEM/PKCS#8")
+                    !looksLikePem(clip) ->
+                        toast("Pasted text does not look like a PEM private key")
+                    else -> toast("PEM pasted from clipboard")
+                }
+            }
+        })
+        keyActions.addView(Button(this).apply {
+            text = "Clear"
+            setOnClickListener {
+                key.text.clear()
+                keyStatus.text = if (existing?.privateKey != null) {
+                    "Cleared editor — Save still keeps existing key unless you paste a new one"
+                } else {
+                    "No key loaded"
+                }
+            }
+        })
+
         val phrase = EditText(this).apply {
             hint = "Key passphrase (optional)"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val showPhrase = CheckBox(this).apply {
+            text = "Show passphrase"
+            setOnCheckedChangeListener { _, checked ->
+                setPasswordVisible(phrase, checked)
+            }
         }
         val mfa = CheckBox(this).apply {
             text = "MFA (Google Authenticator / keyboard-interactive)"
@@ -147,7 +259,22 @@ class ConnectionsActivity : AppCompatActivity() {
         val form = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(40, 16, 40, 0)
-            listOf(name, host, port, user, password, key, phrase, mfa).forEach { addView(it) }
+            addView(name)
+            addView(host)
+            addView(port)
+            addView(user)
+            addView(password)
+            addView(showPassword)
+            addView(TextView(this@ConnectionsActivity).apply {
+                text = "Private key (PEM)"
+                setPadding(0, 16, 0, 4)
+            })
+            addView(keyActions)
+            addView(keyStatus)
+            addView(key)
+            addView(phrase)
+            addView(showPhrase)
+            addView(mfa)
         }
         AlertDialog.Builder(this)
             .setTitle(if (existing == null) "Add $id" else "Edit $id")
@@ -156,12 +283,15 @@ class ConnectionsActivity : AppCompatActivity() {
                 val h = host.text.toString().trim()
                 val u = user.text.toString().trim()
                 if (h.isEmpty() || u.isEmpty()) {
-                    Toast.makeText(this, "Host and user required", Toast.LENGTH_SHORT).show()
+                    toast("Host and user required")
                     return@setPositiveButton
                 }
                 val pwdIn = password.text.toString()
-                val keyIn = key.text.toString()
+                val keyIn = key.text.toString().trim()
                 val phraseIn = phrase.text.toString()
+                if (keyIn.isNotEmpty() && !looksLikePem(keyIn)) {
+                    toast("Warning: key does not look like PEM — saved anyway")
+                }
                 val saved = ConnectionStore.Profile(
                     id = id,
                     name = name.text.toString().trim().ifEmpty { id },
@@ -188,6 +318,53 @@ class ConnectionsActivity : AppCompatActivity() {
                 renderList()
             }
             .setNegativeButton("Cancel", null)
+            .setOnDismissListener {
+                pendingKeyField = null
+                pendingKeyStatus = null
+            }
             .show()
     }
+
+    private fun updateKeyStatus(pem: String) {
+        pendingKeyStatus?.text = when {
+            pem.contains("BEGIN OPENSSH PRIVATE KEY") ->
+                "Loaded OpenSSH key (${pem.length} chars) — convert to PEM for JSch"
+            looksLikePem(pem) ->
+                "Loaded PEM key (${pem.length} chars)"
+            else ->
+                "Loaded text (${pem.length} chars) — may not be PEM"
+        }
+    }
+
+    private fun readPemFromUri(uri: Uri): String {
+        contentResolver.openInputStream(uri)?.use { ins ->
+            return ins.bufferedReader(Charsets.UTF_8).readText()
+        } ?: error("cannot open file")
+    }
+
+    private fun readClipboardText(): String? {
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip: ClipData = cm.primaryClip ?: return null
+        if (clip.itemCount < 1) return null
+        return clip.getItemAt(0).coerceToText(this)?.toString()
+    }
+
+    private fun setPasswordVisible(field: EditText, visible: Boolean) {
+        val start = field.selectionStart
+        val end = field.selectionEnd
+        field.inputType = if (visible) {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        } else {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        field.setSelection(start.coerceAtLeast(0), end.coerceAtLeast(0))
+    }
+
+    private fun looksLikePem(text: String): Boolean {
+        val t = text.uppercase()
+        return t.contains("BEGIN") && t.contains("PRIVATE KEY") && t.contains("END")
+    }
+
+    private fun toast(msg: String) =
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 }
