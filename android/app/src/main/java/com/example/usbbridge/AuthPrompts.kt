@@ -93,6 +93,44 @@ object AuthPrompts {
         return result.get()
     }
 
+    /** Choice when a previously trusted host presents a new fingerprint. */
+    enum class HostKeyChangedChoice { FORGET_AND_RETRUST, CANCEL }
+
+    fun promptHostKeyChanged(host: String, oldFp: String?, newFp: String): HostKeyChangedChoice {
+        val act = activityRef?.get() ?: return HostKeyChangedChoice.CANCEL
+        val result = AtomicReference(HostKeyChangedChoice.CANCEL)
+        val latch = CountDownLatch(1)
+        val msg = buildString {
+            append("Host key for $host changed!\n\n")
+            append("This can mean the server was reinstalled — or a MITM attack.\n\n")
+            if (!oldFp.isNullOrBlank()) append("Previously trusted:\n$oldFp\n\n")
+            append("New fingerprint:\n$newFp\n\n")
+            append("Only continue if you verified the new key with the server admin.")
+        }
+        main.post {
+            try {
+                AlertDialog.Builder(act)
+                    .setTitle("Host key changed")
+                    .setMessage(msg)
+                    .setCancelable(false)
+                    .setPositiveButton("Forget & re-trust") { _, _ ->
+                        result.set(HostKeyChangedChoice.FORGET_AND_RETRUST)
+                        latch.countDown()
+                    }
+                    .setNegativeButton("Cancel") { _, _ ->
+                        result.set(HostKeyChangedChoice.CANCEL)
+                        latch.countDown()
+                    }
+                    .show()
+            } catch (_: Exception) {
+                result.set(HostKeyChangedChoice.CANCEL)
+                latch.countDown()
+            }
+        }
+        latch.await(5, TimeUnit.MINUTES)
+        return result.get()
+    }
+
     fun toast(ctx: Context, msg: String) {
         main.post {
             android.widget.Toast.makeText(ctx.applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()

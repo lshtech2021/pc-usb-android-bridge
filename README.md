@@ -147,13 +147,13 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | Files the PC received from the phone | `<directory where ui.py was started>/downloads/` |
 | Files the PC sends to the phone | User-chosen folder via **Choose save folder** (persisted SAF access), or app default `Android/data/com.example.usbbridge/files/` |
 | Text received by the phone | Notification bar + in-app UI notice |
-| Phone known_hosts (host fingerprints) | `/data/data/com.example.usbbridge/files/known_hosts` (not visible without root; clearing app data resets it) |
+| Phone known_hosts (host fingerprints) | `/data/data/com.example.usbbridge/files/known_hosts` — manage via **SSH Connections**: Forget host key / Clear all host keys |
 | SSH connection profiles (encrypted) | Android EncryptedSharedPreferences (Keystore); passwords/keys never sent to the PC |
 | Trusted PC fingerprints | Phone EncryptedSharedPreferences (`Trusted PCs` to list/forget) |
 | PC identity (keypair) | `~/.usbbridge/identity.json` (or `%USERPROFILE%\.usbbridge\`); private key never shown in UI |
 | SSH passwords / private-key contents | Stored encrypted on the phone only; entered/used on phone Start (incl. MFA) |
 
-> To "re-confirm a host's fingerprint", go to the phone's "Settings → Apps → USB Bridge → Storage → Clear data", or uninstall and reinstall.
+> Prefer **Forget host key** or **Clear all host keys** in SSH Connections over wiping app data. On `HOST_KEY_CHANGED`, you can **Forget & re-trust** after verifying the new fingerprint.
 
 ---
 
@@ -175,7 +175,7 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | `CONN_NOT_RUNNING` / `CONN_BUSY` | Start the connection on the phone first; only one PC attach per ID |
 | `AUTH_FAILED` | Wrong username/password/private key or MFA code on the phone |
 | Host trust dialog on phone | First connection to that host; verify the fingerprint, then Trust |
-| `HOST_KEY_CHANGED` | Host key changed or possible MITM; clear phone known_hosts after investigating |
+| `HOST_KEY_CHANGED` | Host key differs from the trusted one — verify the new fingerprint, then **Forget & re-trust** on the dialog, or **Forget host key** / **Clear all host keys** in SSH Connections |
 | `Algorithm negotiation fail` | Rare with modern JSch fork (`com.github.mwiede:jsch`); ensure the phone can reach the host and the server allows a mutually supported algorithm |
 | Text messages lag during large file transfers | Chunked file writes within a single connection are synchronous, a known limitation (nothing is lost; see prd §8); avoid chatting while sending large files |
 

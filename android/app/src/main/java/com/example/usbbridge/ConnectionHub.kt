@@ -6,7 +6,6 @@ import com.jcraft.jsch.JSchException
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -176,7 +175,7 @@ object ConnectionHub {
     }
 
     private fun openWithTofu(ctx: Context, profile: ConnectionStore.Profile, live: Live) {
-        val store = File(ctx.filesDir, "known_hosts")
+        val store = TofuHostKeys.storeFile(ctx)
         fun attempt(approved: String?): RemoteSession {
             val keys = TofuHostKeys(store, approved)
             val bridge = object : RemoteSession.AuthBridge {
@@ -218,7 +217,19 @@ object ConnectionHub {
                     if (ok) return attempt(fp)
                 }
                 if (keys.lastResult == HostKeyRepository.CHANGED) {
-                    throw JSchException("HOST_KEY_CHANGED: ${keys.lastFingerprint}")
+                    val newFp = keys.lastFingerprint ?: throw e
+                    val hostLabel = keys.lastHost ?: profile.host
+                    val oldFp = keys.lastRecordedFingerprint
+                        ?: TofuHostKeys.fingerprintOf(store, profile.host, profile.port)
+                    when (AuthPrompts.promptHostKeyChanged(hostLabel, oldFp, newFp)) {
+                        AuthPrompts.HostKeyChangedChoice.FORGET_AND_RETRUST -> {
+                            TofuHostKeys.forgetHost(store, profile.host, profile.port)
+                            keys.lastHost?.let { TofuHostKeys.forgetExact(store, it) }
+                            return attempt(newFp)
+                        }
+                        AuthPrompts.HostKeyChangedChoice.CANCEL ->
+                            throw JSchException("HOST_KEY_CHANGED: $newFp")
+                    }
                 }
                 throw e
             }

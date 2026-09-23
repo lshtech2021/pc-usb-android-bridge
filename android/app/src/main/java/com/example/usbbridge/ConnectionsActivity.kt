@@ -59,6 +59,10 @@ class ConnectionsActivity : AppCompatActivity() {
             text = "Add connection"
             setOnClickListener { editDialog(null) }
         }
+        val clearHosts = Button(this).apply {
+            text = "Clear all host keys"
+            setOnClickListener { confirmClearAllHostKeys() }
+        }
         val scroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -73,6 +77,7 @@ class ConnectionsActivity : AppCompatActivity() {
                 setPadding(0, 0, 0, 16)
             })
             addView(add)
+            addView(clearHosts)
             addView(scroll)
         })
         renderList()
@@ -118,6 +123,7 @@ class ConnectionsActivity : AppCompatActivity() {
             row.addView(TextView(this).apply {
                 text = "${p.id}  ${p.name}\n${p.user}@${p.host}:${p.port}\n" +
                     "Auth: $authHint · State: $state" +
+                    hostKeyHint(p) +
                     if (!err.isNullOrBlank()) "\nError: $err" else ""
                 textSize = 15f
             })
@@ -135,6 +141,7 @@ class ConnectionsActivity : AppCompatActivity() {
                 ConnectionHub.stop(p.id)
             }
             btn("Edit") { editDialog(p) }
+            btn("Forget host key") { confirmForgetHostKey(p) }
             btn("Delete") {
                 AlertDialog.Builder(this)
                     .setMessage("Delete ${p.id}?")
@@ -149,6 +156,53 @@ class ConnectionsActivity : AppCompatActivity() {
             row.addView(actions)
             listBox.addView(row)
         }
+    }
+
+    private fun hostKeyHint(p: ConnectionStore.Profile): String {
+        val fp = TofuHostKeys.fingerprintOf(TofuHostKeys.storeFile(this), p.host, p.port)
+        return if (fp != null) "\nHost key: ${fp.take(20)}…" else "\nHost key: (none trusted yet)"
+    }
+
+    private fun confirmForgetHostKey(p: ConnectionStore.Profile) {
+        val store = TofuHostKeys.storeFile(this)
+        val fp = TofuHostKeys.fingerprintOf(store, p.host, p.port)
+        if (fp == null) {
+            toast("No trusted host key for ${p.host}")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Forget host key?")
+            .setMessage(
+                "Remove trusted key for ${p.host}:${p.port}?\n\n$fp\n\n" +
+                    "Next Start will ask you to Trust the fingerprint again.")
+            .setPositiveButton("Forget") { _, _ ->
+                val n = TofuHostKeys.forgetHost(store, p.host, p.port)
+                toast(if (n > 0) "Forgot $n host key entr${if (n == 1) "y" else "ies"}" else "Nothing to forget")
+                renderList()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmClearAllHostKeys() {
+        val store = TofuHostKeys.storeFile(this)
+        val n = TofuHostKeys.entryCount(store)
+        if (n == 0) {
+            toast("No host keys stored")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Clear all host keys?")
+            .setMessage(
+                "Remove all $n trusted SSH host fingerprint(s)?\n\n" +
+                    "Connection profiles are kept. Next Start for each host will ask to Trust again.")
+            .setPositiveButton("Clear all") { _, _ ->
+                TofuHostKeys.clearAll(store)
+                toast("All host keys cleared")
+                renderList()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun editDialog(existing: ConnectionStore.Profile?) {
