@@ -7,13 +7,15 @@ import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
 import com.jcraft.jsch.UIKeyboardInteractive
 import com.jcraft.jsch.UserInfo
+import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
+import java.security.Security
 
 /**
- * SSH session via mwiede JSch (OpenSSH + PEM keys, ed25519, rsa-sha2).
- * Auth prompts (password / MFA keyboard-interactive) go through [prompt] on the phone.
+ * SSH session via mwiede JSch + Bouncy Castle (OpenSSH/PEM, ed25519 host keys & client keys).
+ * Auth prompts (password / MFA / key passphrase) go through [prompt] on the phone.
  */
 class RemoteSession(
     private val hostKeys: TofuHostKeys,
@@ -65,6 +67,7 @@ class RemoteSession(
         }
 
     private fun connect(host: String, port: Int, user: String, auth: Auth, block: () -> Unit) {
+        ensureCryptoProviders()
         val jsch = JSch()
         if (!auth.privateKey.isNullOrBlank()) {
             jsch.addIdentity("bridge", auth.privateKey.toByteArray(Charsets.UTF_8), null,
@@ -73,14 +76,24 @@ class RemoteSession(
         val s = jsch.getSession(user, host, port)
         auth.password?.takeIf { it.isNotEmpty() }?.let { s.setPassword(it) }
         s.setConfig("StrictHostKeyChecking", "yes")
+        // Match modern OpenSSH preference: ed25519 host key first (same SHA256 as `ssh -vvv`)
+        s.setConfig("server_host_key", OPENSSH_HOST_KEY_ORDER)
+        s.setConfig("PubkeyAcceptedAlgorithms", OPENSSH_PUBKEY_ORDER)
         s.setHostKeyRepository(hostKeys)
-        if (auth.mfa || prompt != null) {
+
+        var effectivePassphrase = auth.passphrase
+        if (auth.mfa || prompt != null || !auth.privateKey.isNullOrBlank()) {
             s.setUserInfo(object : UserInfo, UIKeyboardInteractive {
                 override fun getPassword(): String? =
                     auth.password ?: prompt?.askPassword("SSH password for $user@$host")
                 override fun promptYesNo(message: String?) = false
-                override fun getPassphrase(): String? = auth.passphrase
-                override fun promptPassphrase(message: String?) = !auth.passphrase.isNullOrEmpty()
+                override fun getPassphrase(): String? = effectivePassphrase
+                override fun promptPassphrase(message: String?): Boolean {
+                    if (!effectivePassphrase.isNullOrEmpty()) return true
+                    val p = prompt?.askPassword(message ?: "Private key passphrase") ?: return false
+                    effectivePassphrase = p
+                    return true
+                }
                 override fun promptPassword(message: String?): Boolean {
                     if (!auth.password.isNullOrEmpty()) return true
                     val p = prompt?.askPassword(message ?: "Password") ?: return false
@@ -97,9 +110,11 @@ class RemoteSession(
                         destination ?: "", name ?: "", instruction ?: "", promptArr, echo)
                 }
             })
-            // Prefer keyboard-interactive when MFA is expected
-            if (auth.mfa) {
-                s.setConfig("PreferredAuthentications", "keyboard-interactive,password,publickey")
+            when {
+                auth.mfa ->
+                    s.setConfig("PreferredAuthentications", "keyboard-interactive,password,publickey")
+                !auth.privateKey.isNullOrBlank() ->
+                    s.setConfig("PreferredAuthentications", "publickey,keyboard-interactive,password")
             }
         }
         s.connect(30_000)
@@ -129,5 +144,28 @@ class RemoteSession(
         runCatching { stdin.close() }
         runCatching { channel?.disconnect() }
         runCatching { session?.disconnect() }
+    }
+
+    companion object {
+        /** OpenSSH-like HostKeyAlgorithms order (certs omitted for simplicity). */
+        private const val OPENSSH_HOST_KEY_ORDER =
+            "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256"
+
+        private const val OPENSSH_PUBKEY_ORDER =
+            "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,rsa-sha2-512,rsa-sha2-256"
+
+        @Volatile private var cryptoReady = false
+
+        fun ensureCryptoProviders() {
+            if (cryptoReady) return
+            synchronized(this) {
+                if (cryptoReady) return
+                // Android ART is not Java 15+; without BC, JSch strips ssh-ed25519
+                if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+                    Security.addProvider(BouncyCastleProvider())
+                }
+                cryptoReady = true
+            }
+        }
     }
 }

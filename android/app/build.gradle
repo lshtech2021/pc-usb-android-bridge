@@ -39,4 +39,6 @@ dependencies {
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     // Community JSch fork: OpenSSH private keys, ed25519, rsa-sha2 (same com.jcraft.jsch API)
     implementation 'com.github.mwiede:jsch:2.28.7'
+    // Required on Android (no Java 15+ EdDSA): enables ssh-ed25519 host keys + client identities
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.80'
 }
