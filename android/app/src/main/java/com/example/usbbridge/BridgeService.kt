@@ -35,28 +35,28 @@ import java.util.concurrent.atomic.AtomicInteger
  * Foreground service: listens on 127.0.0.1:PORT (the PC side reconnects via adb forward), one SessionHandler per connection.
  */
 class BridgeService : Service() {
+    private val hubListener: () -> Unit = { refreshForegroundNotification() }
+
     override fun onBind(intent: Intent?) = null
 
     override fun onCreate() {
         super.onCreate()
-        token = randomToken()                  // §7: regenerate on every service start
+        if (token.isEmpty()) token = randomToken()
         ensureChannels(this)
-        val n = buildNotification(this, "USB Bridge running (127.0.0.1:$PORT)", "Token: $token",
-            ongoing = true, channelId = CHANNEL_SERVICE)
-        if (Build.VERSION.SDK_INT >= 29) {
-            ServiceCompat.startForeground(this, NOTIF_SERVICE, n,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        } else {
-            startForeground(NOTIF_SERVICE, n)
-        }
+        // Must call startForeground promptly (Android 8+ time limit)
+        startForegroundNow()
+        ConnectionHub.addListener(hubListener)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (running) return START_STICKY          // Re-entry guard: repeated button taps / system restart won't start a second listener
+        if (running) {
+            refreshForegroundNotification()
+            return START_STICKY
+        }
         running = true
         Thread {
             try {
-                // Bind loopback only: device-side adb forward reconnects via 127.0.0.1, and other apps cannot connect directly
+                // Bind loopback only: device-side adb forward reconnects via 127.0.0.1
                 val srv = ServerSocket(PORT, 8, InetAddress.getByName("127.0.0.1"))
                 server = srv
                 while (running) {
@@ -71,17 +71,48 @@ class BridgeService : Service() {
                 running = false
                 runCatching { server?.close() }
                 server = null
+                refreshForegroundNotification()
             }
         }.start()
+        refreshForegroundNotification()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        ConnectionHub.removeListener(hubListener)
+        // Do not stop ConnectionHub SSH here — sessions outlive USB; process death ends them.
         running = false
         runCatching { server?.close() }
         sessions.forEach { runCatching { it.close() } }
         sessions.clear()
         super.onDestroy()
+    }
+
+    private fun refreshForegroundNotification() {
+        if (Looper.myLooper() == Looper.getMainLooper()) startForegroundNow()
+        else mainHandler.post { startForegroundNow() }
+    }
+
+    private fun startForegroundNow() {
+        val ssh = ConnectionHub.runningIds()
+        val title = if (running) {
+            "USB Bridge listening (127.0.0.1:$PORT)"
+        } else {
+            "USB Bridge starting…"
+        }
+        val body = buildString {
+            append("Token: $token")
+            if (ssh.isNotEmpty()) append("\nSSH running: ${ssh.joinToString(", ")}")
+            else append("\nSSH: none")
+        }
+        val n = buildNotification(this, title, body,
+            ongoing = true, channelId = CHANNEL_SERVICE)
+        if (Build.VERSION.SDK_INT >= 29) {
+            ServiceCompat.startForeground(this, NOTIF_SERVICE, n,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_SERVICE, n)
+        }
     }
 
     companion object {

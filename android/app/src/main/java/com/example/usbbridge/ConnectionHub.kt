@@ -77,6 +77,12 @@ object ConnectionHub {
 
     fun lastError(id: String): String? = lives[id]?.lastError
 
+    /** Short summary for notifications / main status, e.g. "ID_01, ID_02" or empty. */
+    fun runningIds(): List<String> =
+        lives.values.filter { it.state == STATE_RUNNING || it.state == STATE_STARTING }
+            .map { it.id }
+            .sorted()
+
     fun start(ctx: Context, id: String) {
         ensureSlots(ctx)
         val profile = ConnectionStore.get(ctx, id) ?: run {

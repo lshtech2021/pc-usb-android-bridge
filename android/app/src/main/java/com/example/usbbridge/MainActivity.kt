@@ -107,9 +107,7 @@ class MainActivity : AppCompatActivity() {
 
         start.setOnClickListener {
             ContextCompat.startForegroundService(this, Intent(this, BridgeService::class.java))
-            info.postDelayed({
-                info.text = "Service started, listening on 127.0.0.1:${BridgeService.PORT}\nToken: ${BridgeService.token}"
-            }, 300)
+            info.postDelayed({ refreshServiceStatus() }, 300)
         }
         chooseFolder.setOnClickListener {
             val initial = ReceiveDirPrefs.getTreeUri(this)
@@ -150,6 +148,7 @@ class MainActivity : AppCompatActivity() {
             addView(msgScroll)
         })
         refreshSaveFolderLabel()
+        refreshServiceStatus()
     }
 
     override fun onStart() {
@@ -161,10 +160,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Activity may be recreated after backgrounding; restore listening / token / SSH status
+        refreshServiceStatus()
+    }
+
     override fun onStop() {
         AuthPrompts.unbind(this)
         BridgeService.removeTextListener(onPcText)
         super.onStop()
+    }
+
+    private fun refreshServiceStatus() {
+        if (!::info.isInitialized) return
+        val ssh = ConnectionHub.runningIds()
+        info.text = when {
+            BridgeService.running && BridgeService.token.isNotEmpty() -> buildString {
+                append("Listening on 127.0.0.1:${BridgeService.PORT}\n")
+                append("Token: ${BridgeService.token}\n")
+                if (ssh.isNotEmpty()) append("SSH running: ${ssh.joinToString(", ")}")
+                else append("SSH: none (Start from SSH Connections)")
+            }
+            BridgeService.token.isNotEmpty() -> buildString {
+                append("Service present but not listening\n")
+                append("Token: ${BridgeService.token}\n")
+                append("Tap Start USB Bridge service to resume")
+            }
+            else -> "Service not running. Tap Start USB Bridge service."
+        }
     }
 
     private fun showTrustedPcs() {

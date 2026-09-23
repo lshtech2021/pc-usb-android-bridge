@@ -166,6 +166,8 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | The connection drops immediately and `BAD_TOKEN` appears in the message panel | Wrong Token, or the phone service was restarted (the Token is regenerated); use whatever the phone UI currently shows |
 | Port-in-use / forward failure | Port 12580 is taken, or a previous forward is lingering; disconnect and reconnect (a `--remove-all` runs before connecting) |
 | Tapping "Start service" on the phone does nothing | Notification permission / foreground service is restricted by the system; allow notifications in settings, or disable battery optimization and retry |
+| Main page loses Token / listening status after switching apps | Fixed: status refreshes on resume from the live service. If Token is empty and SSH died, the **process was killed** by the OS — keep the foreground notification, disable battery optimization for USB Bridge, avoid Force stop |
+| SSH disconnects when app is backgrounded | SSH lives in the app process (survives UI backgrounding while the process lives). Aggressive OEM killers may still reclaim the process — disable battery optimization; swipe-away from recents no longer stops the bridge service (`stopWithTask=false`) |
 | PC text to the phone gives no notification | The phone denied notification permission; the content is still recorded in the app UI |
 | `HOST_UNREACHABLE` | Wrong target server address/port, or the phone's current network cannot reach that machine (the phone needs internet access and must be able to reach the host) |
 | `BAD_TOKEN` | Wrong Token, or the phone service was restarted (Token regenerates) |

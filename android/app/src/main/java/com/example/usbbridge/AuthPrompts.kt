@@ -12,6 +12,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.lang.ref.WeakReference
+import java.util.ArrayDeque
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -21,15 +22,32 @@ import java.util.concurrent.atomic.AtomicReference
  * Used for MFA OTP and host-key trust during ConnectionHub.start().
  */
 object AuthPrompts {
-    @Volatile private var activityRef: WeakReference<Activity>? = null
+    /** Top of stack = foreground activity that can show dialogs. */
+    private val activityStack = ArrayDeque<WeakReference<Activity>>()
     private val main = Handler(Looper.getMainLooper())
 
     fun bind(activity: Activity) {
-        activityRef = WeakReference(activity)
+        synchronized(activityStack) {
+            activityStack.removeAll { it.get() == null || it.get() === activity }
+            activityStack.addLast(WeakReference(activity))
+        }
     }
 
     fun unbind(activity: Activity) {
-        if (activityRef?.get() === activity) activityRef = null
+        synchronized(activityStack) {
+            activityStack.removeAll { it.get() == null || it.get() === activity }
+        }
+    }
+
+    private fun currentActivity(): Activity? {
+        synchronized(activityStack) {
+            while (activityStack.isNotEmpty()) {
+                val a = activityStack.last().get()
+                if (a != null && !a.isFinishing && !a.isDestroyed) return a
+                activityStack.removeLast()
+            }
+            return null
+        }
     }
 
     fun copyText(ctx: Context, label: String, text: String) {
@@ -38,7 +56,7 @@ object AuthPrompts {
     }
 
     fun promptText(title: String, message: String, hint: String = ""): String? {
-        val act = activityRef?.get() ?: return null
+        val act = currentActivity() ?: return null
         val result = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
         main.post {
@@ -76,7 +94,7 @@ object AuthPrompts {
     }
 
     fun promptYesNo(title: String, message: String): Boolean {
-        val act = activityRef?.get() ?: return false
+        val act = currentActivity() ?: return false
         val result = AtomicReference(false)
         val latch = CountDownLatch(1)
         main.post {
@@ -103,7 +121,7 @@ object AuthPrompts {
 
     /** First-use host key trust with full selectable fingerprint + Copy. */
     fun promptTrustHostKey(host: String, fingerprint: String): Boolean {
-        val act = activityRef?.get() ?: return false
+        val act = currentActivity() ?: return false
         val result = AtomicReference(false)
         val latch = CountDownLatch(1)
         main.post {
@@ -145,7 +163,7 @@ object AuthPrompts {
     enum class HostKeyChangedChoice { FORGET_AND_RETRUST, CANCEL }
 
     fun promptHostKeyChanged(host: String, oldFp: String?, newFp: String): HostKeyChangedChoice {
-        val act = activityRef?.get() ?: return HostKeyChangedChoice.CANCEL
+        val act = currentActivity() ?: return HostKeyChangedChoice.CANCEL
         val result = AtomicReference(HostKeyChangedChoice.CANCEL)
         val latch = CountDownLatch(1)
         main.post {
