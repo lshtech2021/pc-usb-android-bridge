@@ -211,9 +211,7 @@ object ConnectionHub {
                 if (keys.lastResult == HostKeyRepository.NOT_INCLUDED) {
                     val fp = keys.lastFingerprint ?: throw e
                     val host = keys.lastHost ?: profile.host
-                    val ok = AuthPrompts.promptYesNo(
-                        "Trust host key?",
-                        "First connection to $host\n\nFingerprint:\n$fp\n\nTrust and continue?")
+                    val ok = AuthPrompts.promptTrustHostKey(host, fp)
                     if (ok) return attempt(fp)
                 }
                 if (keys.lastResult == HostKeyRepository.CHANGED) {

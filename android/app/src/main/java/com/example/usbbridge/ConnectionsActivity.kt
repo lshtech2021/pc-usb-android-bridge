@@ -123,9 +123,24 @@ class ConnectionsActivity : AppCompatActivity() {
             row.addView(TextView(this).apply {
                 text = "${p.id}  ${p.name}\n${p.user}@${p.host}:${p.port}\n" +
                     "Auth: $authHint · State: $state" +
-                    hostKeyHint(p) +
                     if (!err.isNullOrBlank()) "\nError: $err" else ""
                 textSize = 15f
+            })
+            val fp = TofuHostKeys.fingerprintOf(TofuHostKeys.storeFile(this), p.host, p.port)
+            row.addView(TextView(this).apply {
+                textSize = 13f
+                setPadding(0, 4, 0, 4)
+                if (fp != null) {
+                    text = "Host key (full, long-press to copy):\n$fp"
+                    setTextIsSelectable(true)
+                    setOnLongClickListener {
+                        AuthPrompts.copyText(this@ConnectionsActivity, "host-key", fp)
+                        toast("Fingerprint copied")
+                        true
+                    }
+                } else {
+                    text = "Host key: (none trusted yet)"
+                }
             })
             val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             fun btn(label: String, enabled: Boolean = true, click: () -> Unit) =
@@ -141,6 +156,12 @@ class ConnectionsActivity : AppCompatActivity() {
                 ConnectionHub.stop(p.id)
             }
             btn("Edit") { editDialog(p) }
+            if (fp != null) {
+                btn("Copy host key") {
+                    AuthPrompts.copyText(this, "host-key", fp)
+                    toast("Fingerprint copied")
+                }
+            }
             btn("Forget host key") { confirmForgetHostKey(p) }
             btn("Delete") {
                 AlertDialog.Builder(this)
@@ -158,11 +179,6 @@ class ConnectionsActivity : AppCompatActivity() {
         }
     }
 
-    private fun hostKeyHint(p: ConnectionStore.Profile): String {
-        val fp = TofuHostKeys.fingerprintOf(TofuHostKeys.storeFile(this), p.host, p.port)
-        return if (fp != null) "\nHost key: ${fp.take(20)}…" else "\nHost key: (none trusted yet)"
-    }
-
     private fun confirmForgetHostKey(p: ConnectionStore.Profile) {
         val store = TofuHostKeys.storeFile(this)
         val fp = TofuHostKeys.fingerprintOf(store, p.host, p.port)
@@ -170,18 +186,40 @@ class ConnectionsActivity : AppCompatActivity() {
             toast("No trusted host key for ${p.host}")
             return
         }
-        AlertDialog.Builder(this)
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 8)
+            addView(TextView(this@ConnectionsActivity).apply {
+                text = "Remove trusted key for ${p.host}:${p.port}?\n\nFull fingerprint:"
+            })
+            addView(TextView(this@ConnectionsActivity).apply {
+                text = fp
+                textSize = 13f
+                setTextIsSelectable(true)
+                setPadding(0, 8, 0, 8)
+            })
+            addView(TextView(this@ConnectionsActivity).apply {
+                text = "\nNext Start will ask you to Trust the fingerprint again."
+            })
+        }
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Forget host key?")
-            .setMessage(
-                "Remove trusted key for ${p.host}:${p.port}?\n\n$fp\n\n" +
-                    "Next Start will ask you to Trust the fingerprint again.")
+            .setView(body)
             .setPositiveButton("Forget") { _, _ ->
                 val n = TofuHostKeys.forgetHost(store, p.host, p.port)
                 toast(if (n > 0) "Forgot $n host key entr${if (n == 1) "y" else "ies"}" else "Nothing to forget")
                 renderList()
             }
             .setNegativeButton("Cancel", null)
-            .show()
+            .setNeutralButton("Copy", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                AuthPrompts.copyText(this, "host-key", fp)
+                toast("Fingerprint copied")
+            }
+        }
+        dialog.show()
     }
 
     private fun confirmClearAllHostKeys() {
