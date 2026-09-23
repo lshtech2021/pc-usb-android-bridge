@@ -78,4 +78,13 @@
         <item name="android:buttonStyle">@style/Widget.UsbBridge.Button.Text</item>
     </style>
 
+    <!-- Borderless in the error colour, for destructive actions like Delete / Forget. -->
+    <style name="Widget.UsbBridge.Button.Text.Destructive" parent="Widget.UsbBridge.Button.Text">
+        <item name="android:textColor">@color/brand_error</item>
+    </style>
+
+    <style name="ThemeOverlay.UsbBridge.DestructiveButton" parent="">
+        <item name="android:buttonStyle">@style/Widget.UsbBridge.Button.Text.Destructive</item>
+    </style>
+
 </resources>

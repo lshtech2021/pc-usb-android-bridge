@@ -55,11 +55,6 @@ class MainActivity : AppCompatActivity() {
     /** Assigned once the view tree exists; the log is rebuilt in onStart, which runs after. */
     private var messagesScroll: ScrollView? = null
 
-    /** Resolve a dimens token to pixels (the UI is built in Kotlin, so paddings are raw px). */
-    private fun dp(resId: Int): Int = resources.getDimensionPixelSize(resId)
-
-    private fun color(resId: Int): Int = ContextCompat.getColor(this, resId)
-
     private val onPcText: (String) -> Unit = { text ->
         runOnUiThread { addBubble(text, fromMe = false, at = System.currentTimeMillis()) }
     }
@@ -134,7 +129,7 @@ class MainActivity : AppCompatActivity() {
         setPadding(pad, pad, pad, pad)
         serviceButton = buildServiceButton()
         addView(buildStatusCard())
-        addView(serviceButton, wrap(top = dp(R.dimen.space_l)))
+        addView(serviceButton, matchWidth(top = dp(R.dimen.space_l)))
         addView(sectionHeader(R.string.section_connections))
         addView(buildConnectionsCard())
         addView(sectionHeader(R.string.section_save_folder))
@@ -144,18 +139,10 @@ class MainActivity : AppCompatActivity() {
             setText(R.string.hint_message_copy)
             TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Caption)
             setPadding(0, 0, 0, dp(R.dimen.space_s))
-            layoutParams = wrap()
+            layoutParams = matchWidth()
         })
         addView(buildMessagesArea())
     }
-
-    private fun wrap(top: Int = 0, bottom: Int = 0) =
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            topMargin = top
-            bottomMargin = bottom
-        }
 
     private fun sectionHeader(textRes: Int) = TextView(this).apply {
         setText(textRes)
@@ -194,7 +181,7 @@ class MainActivity : AppCompatActivity() {
             cardElevation = 0f
             strokeWidth = 0
             setCardBackgroundColor(color(R.color.brand_surface_variant))
-            layoutParams = wrap(top = dp(R.dimen.space_xs))
+            layoutParams = matchWidth(top = dp(R.dimen.space_xs))
             addView(column, FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT))
@@ -229,7 +216,7 @@ class MainActivity : AppCompatActivity() {
             background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_row_ripple)
             val pad = dp(R.dimen.card_padding)
             setPadding(pad, dp(R.dimen.space_s), pad, dp(R.dimen.space_s))
-            layoutParams = wrap()
+            layoutParams = matchWidth()
             addView(iconView(iconRes, R.color.brand_on_surface_variant))
             addView(label)
             trailing.forEach { addView(it) }
@@ -447,7 +434,7 @@ class MainActivity : AppCompatActivity() {
             // MATCH_PARENT so gravity actually places the bubble left or right.
             gravity = if (fromMe) Gravity.END else Gravity.START
             setPadding(0, dp(R.dimen.bubble_gap), 0, 0)
-            layoutParams = wrap()
+            layoutParams = matchWidth()
             addView(bubble)
         })
         if (scroll) scrollToLatest()
@@ -462,7 +449,7 @@ class MainActivity : AppCompatActivity() {
             TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Notice)
             gravity = Gravity.CENTER
             setPadding(0, dp(R.dimen.space_s), 0, 0)
-            layoutParams = wrap()
+            layoutParams = matchWidth()
         })
         scrollToLatest()
     }
@@ -550,34 +537,75 @@ class MainActivity : AppCompatActivity() {
         tokenHint.visibility = if (hasToken) View.GONE else View.VISIBLE
     }
 
+    /**
+     * Each PC gets an explicit Forget button. Previously the whole row was the forget trigger,
+     * which is why the dialog title had to read "tap to forget" - there was no affordance at all.
+     */
     private fun showTrustedPcs() {
-        val entries = PcTrustStore.list(this)
-        if (entries.isEmpty()) {
-            AlertDialog.Builder(this)
-                .setTitle(R.string.title_trusted_pcs)
-                .setMessage("No trusted PCs yet. Approve a PC when it connects.")
-                .setPositiveButton("OK", null)
-                .show()
-            return
-        }
-        val labels = entries.map {
-            "${it.pcName}\n${LinkCrypto.shortId(it.pcId)}…"
-        }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Trusted PCs — tap to forget")
-            .setItems(labels) { _, which ->
-                val e = entries[which]
-                AlertDialog.Builder(this)
-                    .setTitle("Forget PC?")
-                    .setMessage("Forget \"${e.pcName}\" (${LinkCrypto.shortId(e.pcId)}…)?\nNext connect will ask again.")
-                    .setPositiveButton("Forget") { _, _ ->
-                        PcTrustStore.forget(this, e.pcId)
-                        addNotice(getString(R.string.notice_forgot_pc, e.pcName))
-                    }
-                    .setNegativeButton("Cancel", null)
-                    .show()
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.title_trusted_pcs)
+            .setView(ScrollView(this).apply { addView(body) })
+            .setNegativeButton(R.string.action_close, null)
+            .create()
+
+        val destructiveCtx = ContextThemeWrapper(this, R.style.ThemeOverlay_UsbBridge_DestructiveButton)
+
+        fun rebuild() {
+            body.removeAllViews()
+            val entries = PcTrustStore.list(this)
+            if (entries.isEmpty()) {
+                body.addView(TextView(this).apply {
+                    setText(R.string.trusted_empty)
+                    setPadding(dp(R.dimen.dialog_padding_horizontal), 0,
+                        dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_s))
+                })
+                return
             }
-            .setNegativeButton("Close", null)
+            entries.forEach { e ->
+                body.addView(LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    minimumHeight = dp(R.dimen.row_min_height)
+                    setPadding(dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_s),
+                        dp(R.dimen.dialog_padding_horizontal), dp(R.dimen.space_s))
+                    addView(LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        layoutParams = LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        setPadding(0, 0, dp(R.dimen.space_s), 0)
+                        addView(TextView(this@MainActivity).apply {
+                            text = e.pcName
+                            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Body)
+                        })
+                        addView(TextView(this@MainActivity).apply {
+                            text = getString(R.string.pc_short_id, LinkCrypto.shortId(e.pcId))
+                            TextViewCompat.setTextAppearance(this, R.style.TextAppearance_UsbBridge_Caption)
+                        })
+                    })
+                    addView(Button(destructiveCtx).apply {
+                        setText(R.string.action_forget)
+                        setOnClickListener { confirmForgetPc(e) { rebuild() } }
+                    })
+                })
+            }
+        }
+
+        dialog.setOnShowListener { rebuild() }
+        dialog.show()
+    }
+
+    private fun confirmForgetPc(e: PcTrustStore.Entry, onForgotten: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.forget_pc_title)
+            .setMessage(getString(
+                R.string.forget_pc_message, e.pcName, LinkCrypto.shortId(e.pcId)))
+            .setPositiveButton(R.string.action_forget) { _, _ ->
+                PcTrustStore.forget(this, e.pcId)
+                addNotice(getString(R.string.notice_forgot_pc, e.pcName))
+                onForgotten()
+            }
+            .setNegativeButton(R.string.action_cancel, null)
             .show()
     }
 

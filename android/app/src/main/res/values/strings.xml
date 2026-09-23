@@ -45,4 +45,96 @@
     <string name="notice_forgot_pc">Forgot PC %1$s</string>
 
     <string name="notif_action_stop">Stop</string>
+
+    <!-- Shared actions -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_close">Close</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_forget">Forget</string>
+    <string name="action_delete">Delete</string>
+
+    <!-- SSH connections list -->
+    <string name="state_starting">Starting…</string>
+    <string name="state_error">Error</string>
+    <string name="action_add_connection">Add connection</string>
+    <string name="action_start">Start</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_edit">Edit</string>
+    <string name="action_clear_host_keys">Clear all host keys</string>
+    <string name="empty_no_connections">No connections yet. Tap + to add one.</string>
+    <string name="profile_target">%1$s · %2$s@%3$s:%4$d</string>
+    <string name="profile_auth">Auth: %1$s</string>
+    <string name="profile_error">Error: %1$s</string>
+    <string name="auth_key_and_password">Key + password</string>
+    <string name="auth_private_key">Private key</string>
+    <string name="auth_password">Password</string>
+    <string name="auth_none">No auth secret</string>
+    <string name="delete_profile_title">Delete %1$s?</string>
+    <string name="delete_profile_message">This removes the saved connection. Trusted host keys are kept.</string>
+    <string name="profile_deleted">Deleted %1$s</string>
+
+    <!-- Host key -->
+    <string name="host_key_line">Host key: %1$s</string>
+    <string name="host_key_none">Host key: none trusted yet</string>
+    <string name="title_host_key">Host key</string>
+    <string name="host_key_message">Fingerprint trusted for %1$s:%2$d</string>
+    <string name="fingerprint_copied">Fingerprint copied</string>
+    <string name="host_key_forgotten">Host key forgotten</string>
+    <string name="nothing_to_forget">Nothing to forget</string>
+    <string name="clear_keys_title">Clear all host keys?</string>
+    <plurals name="clear_keys_message">
+        <item quantity="one">Remove the trusted SSH host fingerprint?\n\nConnection profiles are kept. The next Start will ask you to trust it again.</item>
+        <item quantity="other">Remove all %1$d trusted SSH host fingerprints?\n\nConnection profiles are kept. The next Start for each host will ask you to trust it again.</item>
+    </plurals>
+    <string name="clear_keys_action">Clear all</string>
+    <string name="clear_keys_none">No host keys stored</string>
+    <string name="clear_keys_done">All host keys cleared</string>
+
+    <!-- Trusted PCs -->
+    <string name="trusted_empty">No trusted PCs yet. Approve a PC when it connects.</string>
+    <string name="pc_short_id">%1$s…</string>
+    <string name="forget_pc_title">Forget PC?</string>
+    <string name="forget_pc_message">Forget \"%1$s\" (%2$s…)?\nThe next connect will ask again.</string>
+
+    <!-- Add / edit profile -->
+    <string name="field_name">Display name</string>
+    <string name="field_host">Host</string>
+    <string name="field_port">Port</string>
+    <string name="field_user">Username</string>
+    <string name="field_password">Password</string>
+    <string name="field_password_keep">Password (leave blank to keep)</string>
+    <string name="field_show_password">Show password</string>
+    <string name="field_key">Private key: PEM or OpenSSH (paste or pick file)</string>
+    <string name="field_key_keep">Private key (blank = keep existing)</string>
+    <string name="field_key_section">Private key (PEM or OpenSSH)</string>
+    <string name="field_passphrase">Key passphrase (optional)</string>
+    <string name="field_show_passphrase">Show passphrase</string>
+    <string name="field_mfa">MFA (Google Authenticator / keyboard-interactive)</string>
+    <string name="title_add_profile">Add %1$s</string>
+    <string name="title_edit_profile">Edit %1$s</string>
+    <string name="action_save">Save</string>
+    <string name="need_host_and_user">Host and user required</string>
+
+    <string name="key_status_saved">Saved key on file. Paste or pick a file to replace.</string>
+    <string name="key_status_none">No key loaded. Pick a key file or paste PEM / OpenSSH text.</string>
+    <string name="key_cleared_keeps_existing">Cleared the editor — Save still keeps the existing key unless you paste a new one</string>
+    <string name="key_cleared_none">No key loaded</string>
+    <string name="key_loaded_openssh">Loaded OpenSSH key</string>
+    <string name="key_loaded_pem">Loaded PEM key</string>
+    <string name="key_loaded_unlike">Loaded text — may not be a private key</string>
+    <string name="key_suspect_saved">Warning: key does not look like PEM/OpenSSH — saved anyway</string>
+
+    <string name="action_pick_key">Pick key file</string>
+    <string name="action_paste_key">Paste key</string>
+    <string name="action_clear">Clear</string>
+    <string name="clipboard_empty">Clipboard is empty</string>
+    <string name="key_pasted_openssh">OpenSSH private key pasted</string>
+    <string name="key_pasted_pem">PEM private key pasted</string>
+    <string name="key_pasted_unlike">Pasted text does not look like a private key</string>
+
+    <string name="pem_file_empty">File is empty</string>
+    <string name="pem_not_a_key">Loaded file — does not look like a private key</string>
+    <string name="pem_openssh_loaded">OpenSSH private key loaded</string>
+    <string name="pem_loaded">PEM private key loaded</string>
+    <string name="pem_read_failed">Failed to read file: %1$s</string>
 </resources>

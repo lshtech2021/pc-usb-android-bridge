@@ -27,6 +27,10 @@
     <dimen name="icon_size">24dp</dimen>
     <dimen name="icon_button_size">44dp</dimen>
     <dimen name="status_dot_size">10dp</dimen>
+    <dimen name="chip_padding_horizontal">10dp</dimen>
+    <dimen name="chip_padding_vertical">4dp</dimen>
+    <!-- Scroll padding so the last card clears the floating action button. -->
+    <dimen name="fab_clearance">72dp</dimen>
     <dimen name="bubble_corner_radius">16dp</dimen>
     <dimen name="bubble_padding_horizontal">12dp</dimen>
     <dimen name="bubble_padding_vertical">8dp</dimen>
