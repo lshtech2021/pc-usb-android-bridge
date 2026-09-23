@@ -32,7 +32,9 @@ class PhoneClient:
         self.on_file_done = None       # fn(fid, name, ok, direction, saved_path)
         self.on_remote_output = None   # fn(channel, stream, bytes)
         self.on_remote_close = None    # fn(channel, code, reason)
-        self.on_remote_error = None    # fn(channel, code, header) channel-level error (including host fingerprint confirmation)
+        self.on_remote_error = None    # fn(channel, code, header)
+        self.on_conn_list = None       # fn(list[dict])
+        self.on_attach_ack = None      # fn(header, backlog_bytes)
         self._recv, self.channels = {}, {}
         self.save_dir = os.path.abspath("downloads")
         os.makedirs(self.save_dir, exist_ok=True)
@@ -173,23 +175,28 @@ class PhoneClient:
         self.on_file_done and self.on_file_done(
             h["id"], st["name"], ok, "down", st["path"] if ok else "")
 
-    # ---------- Feature 3: remote calls (phone as proxy) ----------
-    def remote_open(self, kind: str, trust_fingerprint: str = None, **params) -> int:
+    # ---------- Feature 3: attach to phone-managed SSH connections ----------
+    def list_connections(self):
+        if self.tp and self.tp.alive:
+            self.tp.send(MsgType.CONN_LIST, {})
+
+    def attach(self, connection_id: str) -> int:
         ch = self._new_id()
-        header = {"channel": ch, "kind": kind, **params}
-        if trust_fingerprint:                 # Do not pass None, to avoid the JSON null pitfall
-            header["trust_fingerprint"] = trust_fingerprint
-        self.channels[ch] = header
-        self.tp.send(MsgType.REMOTE_OPEN, header)
+        self.channels[ch] = {"connection_id": connection_id}
+        self.tp.send(MsgType.CONN_ATTACH, {"channel": ch, "connection_id": connection_id})
         return ch
+
+    def detach(self, ch: int):
+        if ch in self.channels:
+            self.tp.send(MsgType.CONN_DETACH, {"channel": ch})
+            self.channels.pop(ch, None)
 
     def remote_input(self, ch: int, data: bytes):
         self.tp.send(MsgType.REMOTE_DATA, {"channel": ch}, data)
 
     def remote_close(self, ch: int):
-        if ch in self.channels:
-            self.tp.send(MsgType.REMOTE_CLOSE, {"channel": ch})
-            self.channels.pop(ch, None)
+        """Legacy alias: detach without stopping phone SSH."""
+        self.detach(ch)
 
     # ---------- Message dispatch ----------
     def _on_frame(self, t, h, p):
@@ -208,6 +215,8 @@ class PhoneClient:
                         path = h.get("path", "") if ok else h.get("path", "") or ""
                         tip = path if ok else (path or "phone rejected / SHA mismatch")
                         self.on_file_done and self.on_file_done(fid, st["name"], ok, "up", tip)
+                elif h.get("connection_id") is not None and "channel" in h:
+                    self.on_attach_ack and self.on_attach_ack(h, p or b"")
             elif t == M.FILE_META:
                 self._on_file_meta(h)
             elif t == M.FILE_CHUNK:
@@ -220,6 +229,8 @@ class PhoneClient:
                         h["id"], st["name"], st["got"], st["size"], "down")
             elif t == M.FILE_END:
                 self._on_file_end(h)
+            elif t == M.CONN_LIST_RESULT:
+                self.on_conn_list and self.on_conn_list(h.get("connections") or [])
             elif t == M.REMOTE_OUTPUT:
                 self.on_remote_output and self.on_remote_output(h["channel"], h.get("stream", "out"), p)
             elif t == M.REMOTE_CLOSE:

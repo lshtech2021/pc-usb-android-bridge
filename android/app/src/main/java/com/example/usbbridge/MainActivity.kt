@@ -70,6 +70,12 @@ class MainActivity : AppCompatActivity() {
             text = "(no messages yet)"
         }
         val start = Button(this).apply { text = "Start USB Bridge service" }
+        val connections = Button(this).apply {
+            text = "SSH Connections"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, ConnectionsActivity::class.java))
+            }
+        }
         val chooseFolder = Button(this).apply { text = "Choose save folder" }
         val resetFolder = Button(this).apply { text = "Use app default folder" }
         val sendText = Button(this).apply { text = "Send text to PC" }
@@ -122,6 +128,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(40, 40, 40, 40)
             addView(info)
             addView(start)
+            addView(connections)
             addView(saveFolderLabel)
             addView(chooseFolder)
             addView(resetFolder)
@@ -136,6 +143,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        AuthPrompts.bind(this)
         val recent = BridgeService.addTextListener(onPcText)
         if (recent.isNotEmpty()) {
             msgLog.text = recent.joinToString("\n") { "[PC] $it" }
@@ -143,6 +151,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        AuthPrompts.unbind(this)
         BridgeService.removeTextListener(onPcText)
         super.onStop()
     }

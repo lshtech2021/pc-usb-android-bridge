@@ -72,7 +72,7 @@ The most reliable way to carry USB communication at the application layer is **A
 
 - **Features 1/2 (bidirectional)**: PC ↔ phone files and text share **the same established TCP connection** in both directions (the protocol itself is full-duplex);
   the phone does not need to connect back to the PC, and **does not need `adb reverse`** — the phone holds the socket returned by `accept()` and simply sends on it.
-- **Feature 3**: the PC issues `REMOTE_OPEN` → the phone uses JSch SSH to reach the target server (the phone acts as a jump-host proxy) → keystrokes and output flow back in both directions.
+- **Feature 3 (product path)**: SSH profiles, MFA, and host trust live **on the phone**. The phone starts/stops long-lived sessions in `ConnectionHub` (survive USB disconnect). The PC lists running connection IDs and **attaches by ID**; interactive I/O uses `REMOTE_DATA` / `REMOTE_OUTPUT` with a pyte terminal. The PC never receives SSH secrets. Legacy credential-bearing `REMOTE_OPEN` from the PC is retained in the protocol for internal/legacy use but is not the product UI path.
 - The phone-side listening port is bound to the **loopback address**, and connections arriving via `adb forward` are treated as the only trusted source, with a second token check (see §7).
 
 ## 3. Custom Application-Layer Protocol (identical on both ends)
@@ -93,10 +93,14 @@ The most reliable way to carry USB communication at the application layer is **A
 | HELLO / ACK | 0x00 / 0x20 | PC→phone / reply | Handshake, header: `{client, version, token}`; the phone verifies the token |
 | TEXT | 0x01 | Bidirectional | header: `{id, text}` |
 | FILE_META / CHUNK / END | 0x02/03/04 | Bidirectional | Chunked file transfer, SHA256 verified on both ends |
-| REMOTE_OPEN | 0x10 | PC→phone | `{channel, kind: ssh/exec, host, port, user, password or private_key+passphrase, command, trust_fingerprint?}` |
+| REMOTE_OPEN | 0x10 | PC→phone | Legacy/internal: `{channel, kind: ssh/exec, host, …credentials…}`. Product path uses phone-managed profiles + `CONN_ATTACH` instead |
 | REMOTE_DATA | 0x11 | PC→phone | stdin data (payload) |
 | REMOTE_OUTPUT | 0x12 | phone→PC | stdout/stderr (payload, distinguished by `stream`) |
 | REMOTE_CLOSE | 0x13 | Bidirectional | Close the channel, header: `{channel, code, reason}` |
+| CONN_LIST | 0x14 | PC→phone | `{}` — request phone connection profiles + live state |
+| CONN_LIST_RESULT | 0x15 | phone→PC | `{connections:[{id,name,host,port,user,state}]}` (`stopped`\|`starting`\|`running`\|`error`) |
+| CONN_ATTACH | 0x16 | PC→phone | `{channel, connection_id}` — attach to a **running** hub session; ack may include backlog bytes |
+| CONN_DETACH | 0x17 | PC→phone | `{channel}` — detach PC from hub session (SSH stays up until phone Stop) |
 | ERROR | 0x21 | Bidirectional | `{code, message, channel?, host?, fingerprint?}` |
 | PING / PONG | 0x30/0x31 | Bidirectional | Heartbeat |
 
@@ -106,7 +110,10 @@ The most reliable way to carry USB communication at the application layer is **A
 |---|---|
 | `BAD_TOKEN` | Handshake token mismatch (the phone then disconnects) |
 | `BAD_FRAME` | Frame parse failure (bad magic/length); the current implementation closes the connection directly, this code is reserved |
-| `UNKNOWN_HOST` | Target host fingerprint is not in the known-hosts store and needs PC confirmation |
+| `UNKNOWN_HOST` | Target host fingerprint is not in the known-hosts store (managed Start: confirm on phone) |
+| `CONN_NOT_RUNNING` | `CONN_ATTACH` for an ID that is not live |
+| `CONN_BUSY` | Another PC channel is already attached to that connection (v1: one attach) |
+| `CONN_NOT_FOUND` | Unknown connection ID |
 | `HOST_KEY_CHANGED` | Target host fingerprint differs from the known one (suspected MITM), connection refused |
 | `AUTH_FAILED` | SSH authentication failed |
 | `HOST_UNREACHABLE` | Target host unreachable / port refused |
@@ -1352,8 +1359,8 @@ class MainActivity : AppCompatActivity() {
 |---|---|---|
 | PC ↔ phone link | `adb forward` opens the port only on the PC's 127.0.0.1; the phone's `ServerSocket` binds to `127.0.0.1` | Other apps on the device cannot connect directly; other local processes on the PC can still reach the forwarded port, which is why a token is added on top |
 | Link authentication | HELLO carries an 8-hex-digit random token (regenerated on every service start, shown in the phone's notification bar and UI) | A wrong token → `ERROR{BAD_TOKEN}` and immediate disconnect; the token only guards against "other processes on the device", not against someone who can read the screen |
-| Credentials | SSH password / key passphrase / key contents pass only through memory and are never written to disk | The private-key contents are transmitted to the phone as plaintext JSON over USB (the USB link is local and not on the internet); if that is a concern, use a key plus source restrictions on the jump-host side |
-| Host identity | TOFU: on first connection the fingerprint must be manually confirmed on the PC before it is written to the phone's `known_hosts`, and every later connection compares strictly | A fingerprint change (suspected MITM) is refused outright with no "ignore" option; the fingerprint format is OpenSSH's `SHA256:...` and can be cross-checked with `ssh-keygen -lf` |
+| Credentials | Product path: profiles stored in phone EncryptedSharedPreferences (Keystore); MFA answered on phone Start; **PC never receives SSH secrets** | Legacy `REMOTE_OPEN` with credentials over USB is not the product UI path |
+| Host identity | TOFU for managed Starts: fingerprint confirmed on the **phone**, then written to phone `known_hosts`; later connections compare strictly | A fingerprint change (suspected MITM) is refused outright with no "ignore" option; format is OpenSSH `SHA256:...` |
 | Plaintext transport | The frame protocol itself is not encrypted | The link is USB + loopback, with no secondary encryption; to work across an untrusted environment, AES-GCM can be added around the `payload` (see §8) |
 
 ## 8. Known Limitations and Extensibility Points
@@ -1361,7 +1368,7 @@ class MainActivity : AppCompatActivity() {
 | Item | Notes |
 |---|---|
 | **Serial session** | Within a single connection, `FILE_*`/`TEXT` are handled synchronously in the same read loop, so text messages are delayed while a large file is being written (nothing is lost; TCP provides backpressure). To decouple them completely, file writes could also be handed to a separate queue thread |
-| **Remote terminal** | Currently "line mode" (type a whole line + `\n`), enough for running commands. **Note: JSch's `ChannelShell` already requests a pty by default**, so the bottleneck is not the pty but the lack of raw keystroke passthrough + terminal emulation (`TERM` delivery, window size `setPtySize`, ANSI escape parsing and rendering). To make `htop`/`vim` usable you need: ① the PC to send keystroke by keystroke and handle arrow/control keys; ② rendering with a terminal emulator such as `pyte` instead of shoving raw bytes into `QPlainTextEdit` |
+| **Remote terminal** | Product path: phone-managed hub + PC attach-by-ID + **pyte** interactive terminal (raw keys, 120×30 PTY). Still not full truecolor / every VT quirk; window-size negotiate is deferred. Sessions outlive USB; Stop on phone ends SSH |
 | **Pseudo-terminal parameters** | `setPtySize(120, 30)` is already delivered; `setEnv("TERM", ...)` requires `AcceptEnv` on the target sshd, otherwise it is ignored, and `export TERM=xterm-256color` on the remote can serve as a fallback |
 | **Backpressure** | The phone's stdin pipe for `REMOTE_DATA` is 1MB; once full, the writing thread blocks (blocking only the remote channel queue, not text/file/heartbeat); unbounded fast input can still pile up, so switch to a bounded queue + drop policy if needed |
 | **Large files / resume** | Already chunked + SHA256 verified on both ends; resuming only requires adding an `offset` field to `FILE_META` and seeking on the receiving side |

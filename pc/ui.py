@@ -1,18 +1,18 @@
-"""PyQt5 UI: three tabs corresponding to the three features (messages / files / remote terminal).
+"""PyQt5 UI: three tabs (messages / files / remote terminal attach-by-ID).
 
 Run: py ui.py
 """
 import sys
 
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QComboBox, QPushButton, QLabel, QTabWidget, QPlainTextEdit,
     QLineEdit, QProgressBar, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QCheckBox)
+    QTableWidgetItem, QHeaderView)
 
 from adb_manager import Adb
 from client import PhoneClient
+from terminal import TerminalWidget
 
 PC_PORT, PHONE_PORT = 12580, 9999
 
@@ -26,14 +26,16 @@ class MainWindow(QMainWindow):
     sig_rout = pyqtSignal(object, str, object)
     sig_rclose = pyqtSignal(object, int, str)
     sig_rerr = pyqtSignal(object, str, object)
+    sig_clist = pyqtSignal(object)
+    sig_attach = pyqtSignal(object, object)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("USB Bridge Client")
-        self.resize(820, 600)
+        self.resize(900, 640)
         self.adb, self.client, self.ch = Adb(), PhoneClient(), None
-        self._pending = None          # Last remote-open parameters, used to resend after fingerprint confirmation
-        self._rows = {}               # fid -> table row index
+        self._conn_items = []   # list of connection dicts from phone
+        self._rows = {}
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -43,11 +45,14 @@ class MainWindow(QMainWindow):
         c.on_remote_output = lambda *a: self.sig_rout.emit(*a)
         c.on_remote_close = lambda *a: self.sig_rclose.emit(*a)
         c.on_remote_error = lambda *a: self.sig_rerr.emit(*a)
+        c.on_conn_list = self.sig_clist.emit
+        c.on_attach_ack = lambda h, p: self.sig_attach.emit(h, p)
         for s, slot in ((self.sig_text, self._on_text), (self.sig_status, self._on_status),
                         (self.sig_hello, self._hello_ack),
                         (self.sig_fprog, self._on_fprog), (self.sig_fdone, self._on_fdone),
                         (self.sig_rout, self._on_rout), (self.sig_rclose, self._on_rclose),
-                        (self.sig_rerr, self._on_rerr)):
+                        (self.sig_rerr, self._on_rerr),
+                        (self.sig_clist, self._on_clist), (self.sig_attach, self._on_attach)):
             s.connect(slot)
         self._build_ui()
 
@@ -98,21 +103,21 @@ class MainWindow(QMainWindow):
 
     def _on_status(self, s):
         self.msg_view.appendPlainText(s)
-        # Keep top label honest after drop / bad token / heartbeat timeout
         low = s.lower()
         if "[connection closed]" in low or "bad_token" in low:
             self.lbl.setText("Not connected")
-            self.ch = None
+            self._reset_attach()
 
     def _hello_ack(self, info):
         serial = self.cmb.currentData() or "?"
         self.lbl.setText("Connected " + str(serial))
         self.msg_view.appendPlainText(f"[Phone connected: {info.get('device', '?')}]")
+        self.client.list_connections()
 
-    # ---- Tab2 Files (one row per fid, supports concurrent transfers) ----
+    # ---- Tab2 Files ----
     def _file_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
-        b = QPushButton("Choose a file to send to phone..."); b.clicked.connect(self.pick_send)
+        b = QPushButton("Choose a file to send to phone…"); b.clicked.connect(self.pick_send)
         self.ftab = QTableWidget(0, 4)
         self.ftab.setHorizontalHeaderLabels(["File", "Direction", "Progress", "Status"])
         self.ftab.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
@@ -153,130 +158,106 @@ class MainWindow(QMainWindow):
         tip = ("Done" if ok else "Failed") + (f" -> {path}" if path else "")
         self.ftab.setItem(r, 3, QTableWidgetItem(("✓ " if ok else "✗ ") + tip))
 
-    # ---- Tab3 Remote terminal (phone as SSH proxy) ----
+    # ---- Tab3 Remote terminal (attach by phone connection ID) ----
     def _term_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
         h = QHBoxLayout()
-        self.ed_host = QLineEdit(); self.ed_host.setPlaceholderText("Remote server IP")
-        self.ed_port = QLineEdit("22"); self.ed_port.setFixedWidth(50)
-        self.ed_user = QLineEdit(); self.ed_user.setPlaceholderText("Username")
-        self.ed_pass = QLineEdit(); self.ed_pass.setPlaceholderText("Password")
-        self.ed_pass.setEchoMode(QLineEdit.Password)
-        for x in (self.ed_host, self.ed_port, self.ed_user, self.ed_pass):
-            h.addWidget(x)
+        self.cmb_conn = QComboBox()
+        self.cmb_conn.setMinimumWidth(280)
+        br = QPushButton("Refresh list"); br.clicked.connect(self.refresh_connections)
+        ba = QPushButton("Attach"); ba.clicked.connect(self.attach_conn)
+        bd = QPushButton("Detach"); bd.clicked.connect(self.detach_conn)
+        self.lbl_term = QLabel("Not attached — start a connection on the phone, then Attach")
+        h.addWidget(QLabel("Connection:")); h.addWidget(self.cmb_conn, 1)
+        h.addWidget(br); h.addWidget(ba); h.addWidget(bd)
         v.addLayout(h)
-
-        h2 = QHBoxLayout()
-        self.chk_key = QCheckBox("Use private key")
-        self.ed_key = QLineEdit(); self.ed_key.setPlaceholderText("Private key file (OpenSSH/PKCS#8 PEM)")
-        bk = QPushButton("Choose..."); bk.clicked.connect(self.pick_key)
-        self.ed_phrase = QLineEdit(); self.ed_phrase.setPlaceholderText("Key passphrase (optional)")
-        self.ed_phrase.setEchoMode(QLineEdit.Password); self.ed_phrase.setFixedWidth(130)
-        for x in (self.chk_key, self.ed_key, bk, self.ed_phrase):
-            h2.addWidget(x)
-        h2.setStretch(1, 1)
-        v.addLayout(h2)
-
-        h3 = QHBoxLayout()
-        b1 = QPushButton("SSH via phone (shell)")
-        b1.clicked.connect(lambda: self.open_remote("ssh"))
-        self.ed_cmd = QLineEdit(); self.ed_cmd.setPlaceholderText("One-shot command, e.g. uname -a")
-        b2 = QPushButton("Run exec once"); b2.clicked.connect(lambda: self.open_remote("exec"))
-        b3 = QPushButton("Disconnect"); b3.clicked.connect(self.close_channel)
-        for x in (b1, self.ed_cmd, b2, b3):
-            h3.addWidget(x)
-        h3.setStretch(1, 1)
-        v.addLayout(h3)
-
-        self.term = QPlainTextEdit(); self.term.setReadOnly(True)
-        h4 = QHBoxLayout()
-        self.term_input = QLineEdit(); self.term_input.returnPressed.connect(self.term_send)
-        h4.addWidget(self.term_input, 1)
-        v.addWidget(self.term, 1); v.addLayout(h4)
+        v.addWidget(self.lbl_term)
+        self.term = TerminalWidget()
+        self.term.bytes_out.connect(self._term_bytes)
+        v.addWidget(self.term, 1)
+        v.addWidget(QLabel(
+            "Interactive terminal (pyte). Start SSH on the phone (SSH Connections), "
+            "then Attach by ID. Keys are sent raw (vim/nano/scripts supported)."))
         return w
 
-    def pick_key(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose Private Key")
-        if path:
-            self.ed_key.setText(path); self.chk_key.setChecked(True)
-
-    def _auth_params(self):
-        if self.chk_key.isChecked():
-            path = self.ed_key.text().strip()
-            if not path:
-                raise ValueError("Please select a private key file")
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return {"private_key": f.read(), "passphrase": self.ed_phrase.text()}
-        return {"password": self.ed_pass.text()}
-
-    def open_remote(self, kind, trust_fingerprint=None):
+    def refresh_connections(self):
         if not (self.client.tp and self.client.tp.alive):
             return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
-        try:
-            base = dict(host=self.ed_host.text().strip(),
-                        port=int(self.ed_port.text() or 22),
-                        user=self.ed_user.text().strip(),
-                        **self._auth_params())
-        except Exception as e:
-            return QMessageBox.warning(self, "Invalid parameters", str(e))
-        if kind == "exec":
-            base["command"] = self.ed_cmd.text().strip()
-            if not base["command"]:
-                return QMessageBox.warning(self, "Invalid parameters", "Please enter the command to run")
-        if trust_fingerprint:
-            base["trust_fingerprint"] = trust_fingerprint
-        self._pending = (kind, base)
-        self.ch = self.client.remote_open(kind, **base)
-        self.term.appendPlainText(
-            f"** Connecting to {base['user']}@{base['host']}:{base['port']} via phone ({kind}) ... **")
+        self.client.list_connections()
 
-    def close_channel(self):
-        if self.ch:
-            self.client.remote_close(self.ch)
+    def _on_clist(self, connections):
+        self._conn_items = list(connections or [])
+        cur = self.cmb_conn.currentData()
+        self.cmb_conn.clear()
+        for c in self._conn_items:
+            cid = c.get("id", "?")
+            state = c.get("state", "?")
+            label = f"{cid}  {c.get('name', '')}  {c.get('user', '')}@{c.get('host', '')}  [{state}]"
+            self.cmb_conn.addItem(label, cid)
+        if cur:
+            i = self.cmb_conn.findData(cur)
+            if i >= 0:
+                self.cmb_conn.setCurrentIndex(i)
+
+    def attach_conn(self):
+        if not (self.client.tp and self.client.tp.alive):
+            return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
+        cid = self.cmb_conn.currentData()
+        if not cid:
+            return QMessageBox.warning(self, "Notice", "No connection selected")
+        if self.ch is not None:
+            self.detach_conn()
+        self.term.clear_screen()
+        self.lbl_term.setText(f"Attaching to {cid}…")
+        self.ch = self.client.attach(cid)
+
+    def detach_conn(self):
+        if self.ch is not None:
+            self.client.detach(self.ch)
+        self._reset_attach()
+
+    def _reset_attach(self):
+        self.ch = None
+        self.term.set_attached(False)
+        self.lbl_term.setText("Not attached — start a connection on the phone, then Attach")
+
+    def _on_attach(self, h, backlog):
+        if not h.get("ok"):
+            self.lbl_term.setText(f"Attach failed")
             self.ch = None
+            return
+        cid = h.get("connection_id", "?")
+        self.ch = h.get("channel", self.ch)
+        self.lbl_term.setText(f"Attached to {cid} (channel {self.ch})")
+        self.term.set_attached(True)
+        if backlog:
+            self.term.feed(bytes(backlog))
 
-    def term_send(self):
-        line = self.term_input.text(); self.term_input.clear()
-        if self.ch:
-            self.client.remote_input(self.ch, (line + "\n").encode())  # Line mode, suitable for running commands
+    def _term_bytes(self, data):
+        if self.ch is not None and data:
+            self.client.remote_input(self.ch, bytes(data))
 
     def _on_rout(self, ch, stream, data):
-        text = bytes(data).decode("utf-8", "ignore")
-        if stream == "err":
-            text = "[err] " + text
-        self.term.insertPlainText(text)
-        self.term.moveCursor(QTextCursor.End)
+        if ch != self.ch:
+            return
+        self.term.feed(bytes(data))
 
     def _on_rclose(self, ch, code, reason):
-        self.term.appendPlainText(f"\n** Channel closed code={code} {reason} **")
         if ch == self.ch:
+            self.lbl_term.setText(f"Session closed code={code} {reason}")
+            self.term.set_attached(False)
             self.ch = None
 
     def _on_rerr(self, ch, code, h):
-        host, fp = h.get("host", ""), h.get("fingerprint", "")
-        if code == "UNKNOWN_HOST":                     # First connection: fingerprint is confirmed by the user
-            ans = QMessageBox.question(
-                self, "First connection to this host",
-                f"The fingerprint of target host {host} is not in the phone's known-hosts store:\n\n{fp}\n\n"
-                "Verify it with the server administrator before trusting. Trust and continue?",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if ans == QMessageBox.Yes and self._pending:
-                kind, base = self._pending
-                base.pop("trust_fingerprint", None)
-                self._pending = (kind, base)
-                self.ch = self.client.remote_open(kind, trust_fingerprint=fp, **base)
-                self.term.appendPlainText(f"** Trusted the fingerprint for {host}, reconnecting ... **")
-            else:
-                self.term.appendPlainText(f"** Cancelled connection to {host} **")
-        elif code == "HOST_KEY_CHANGED":
-            QMessageBox.critical(self, "Security Warning",
-                f"The fingerprint of target host {host} does not match the known record!\n\nCurrent fingerprint: {fp}\n\n"
-                "A man-in-the-middle attack is possible, so the connection was refused. Clear this host's known-host record on the phone and confirm again.")
-            self.term.appendPlainText(f"** Connection refused: host key for {host} has changed **")
-        else:
-            self.term.appendPlainText(f"\n** Remote error {code}: {h.get('message','')} **")
+        msg = h.get("message", "")
+        self.lbl_term.setText(f"Error {code}: {msg}")
+        if ch == self.ch or code in ("CONN_NOT_RUNNING", "CONN_BUSY", "CONN_NOT_FOUND"):
+            self.term.set_attached(False)
+            if ch == self.ch:
+                self.ch = None
+        self.msg_view.appendPlainText(f"[Remote error] {code} {msg}")
 
-    # ---- Connection management ----
+    # ---- USB connection management ----
     def refresh(self):
         self.cmb.clear()
         try:
@@ -289,19 +270,25 @@ class MainWindow(QMainWindow):
     def connect_phone(self):
         serial = self.cmb.currentData()
         if not serial:
-            return QMessageBox.warning(self, "Notice", "Please refresh and select a device first (USB debugging must be enabled and authorized)")
+            return QMessageBox.warning(
+                self, "Notice",
+                "Please refresh and select a device first (USB debugging must be enabled and authorized)")
         try:
             self.adb.forward(serial, PC_PORT, PHONE_PORT)
             self.lbl.setText("Connecting...")
             self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text().strip())
-            # lbl becomes Connected only after HELLO ACK (_hello_ack)
         except Exception as e:
             self.lbl.setText("Not connected")
             QMessageBox.critical(self, "Connection failed", str(e))
 
     def disconnect_phone(self):
+        if self.ch is not None:
+            try:
+                self.client.detach(self.ch)
+            except Exception:
+                pass
+        self._reset_attach()
         self.client.close()
-        self.ch = None
         self.lbl.setText("Not connected")
         serial = self.cmb.currentData()
         if serial:

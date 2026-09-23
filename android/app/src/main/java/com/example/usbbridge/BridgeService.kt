@@ -16,8 +16,6 @@ import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.documentfile.provider.DocumentFile
-import com.jcraft.jsch.HostKeyRepository
-import com.jcraft.jsch.JSchException
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
@@ -306,17 +304,54 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                 }
 
                 FrameIO.REMOTE_OPEN -> {
-                    val fr = f; post { openRemote(fr) }
+                    // Legacy PC credential open removed from product path; reject politely
+                    send(FrameIO.ERROR, JSONObject().put("code", "CHANNEL_OPEN_FAILED")
+                        .put("message", "use CONN_ATTACH with a phone connection id"))
                 }
 
                 FrameIO.REMOTE_DATA -> {
                     val d = f.payload; val c = optInt("channel")
-                    post { runCatching { remotes[c]?.writeStdin(d) } }
+                    post {
+                        if (!ConnectionHub.writeStdin(c, d)) {
+                            runCatching { remotes[c]?.writeStdin(d) }
+                        }
+                    }
                 }
 
                 FrameIO.REMOTE_CLOSE -> {
                     val c = optInt("channel")
-                    post { runCatching { remotes.remove(c)?.close() } }
+                    post {
+                        ConnectionHub.detach(c)
+                        runCatching { remotes.remove(c)?.close() }
+                    }
+                }
+
+                FrameIO.CONN_LIST -> {
+                    send(FrameIO.CONN_LIST_RESULT,
+                        JSONObject().put("connections", ConnectionHub.snapshot(ctx)))
+                }
+
+                FrameIO.CONN_ATTACH -> {
+                    val ch = optInt("channel")
+                    val cid = optString("connection_id")
+                    try {
+                        val backlog = ConnectionHub.attach(this@SessionHandler, ch, cid)
+                        send(FrameIO.ACK, JSONObject()
+                            .put("channel", ch).put("connection_id", cid).put("ok", true),
+                            backlog)
+                    } catch (e: ConnectionHub.HubException) {
+                        send(FrameIO.ERROR, JSONObject()
+                            .put("channel", ch).put("code", e.code).put("message", e.message ?: ""))
+                    } catch (e: Exception) {
+                        send(FrameIO.ERROR, JSONObject()
+                            .put("channel", ch).put("code", "CHANNEL_OPEN_FAILED")
+                            .put("message", e.message ?: ""))
+                    }
+                }
+
+                FrameIO.CONN_DETACH -> {
+                    ConnectionHub.detach(optInt("channel"))
+                    send(FrameIO.ACK, JSONObject().put("ok", true).put("channel", optInt("channel")))
                 }
                 else -> {}
             }
@@ -364,50 +399,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         }
     }
 
-    // ---------- Feature 3: remote session ----------
-    private fun openRemote(f: FrameIO.Frame) = with(f.header) {
-        val ch = optInt("channel")
-        val host = optString("host")
-        val trust = optNullableString("trust_fingerprint")
-        val auth = RemoteSession.Auth(
-            password = optNullableString("password"),
-            privateKey = optNullableString("private_key"),
-            passphrase = optNullableString("passphrase"))
-        val hostKeys = TofuHostKeys(File(ctx.filesDir, "known_hosts"), trust)
-        val rs = RemoteSession(hostKeys,
-            { stream, data ->
-                send(FrameIO.REMOTE_OUTPUT,
-                    JSONObject().put("channel", ch).put("stream", stream), data)
-            },
-            { code, reason ->
-                send(FrameIO.REMOTE_CLOSE, JSONObject().put("channel", ch)
-                    .put("code", code).put("reason", reason))
-                remotes.remove(ch)
-            })
-        try {
-            if (optString("kind") == "exec")
-                rs.execSsh(host, optInt("port", 22), optString("user"), auth, optString("command"))
-            else
-                rs.openSsh(host, optInt("port", 22), optString("user"), auth)
-            remotes[ch] = rs
-        } catch (e: Exception) {
-            rs.close()
-            remotes.remove(ch)
-            val code = when {
-                hostKeys.lastResult == HostKeyRepository.CHANGED -> "HOST_KEY_CHANGED"
-                hostKeys.lastResult == HostKeyRepository.NOT_INCLUDED -> "UNKNOWN_HOST"
-                e is JSchException && e.message.orEmpty().contains("Auth fail", true) -> "AUTH_FAILED"
-                e.message.orEmpty().let { m ->
-                    m.contains("Connection refused", true) || m.contains("UnknownHost", true) ||
-                            m.contains("timeout", true) || m.contains("Network is unreachable", true)
-                } -> "HOST_UNREACHABLE"
-                else -> "CHANNEL_OPEN_FAILED"
-            }
-            send(FrameIO.ERROR, JSONObject().put("channel", ch).put("code", code)
-                .put("message", e.message ?: "").put("host", host)
-                .put("fingerprint", hostKeys.lastFingerprint ?: ""))
-        }
-    }
+    // ---------- Feature 3: remote session (managed by ConnectionHub) ----------
 
     private fun notifyText(ctx: Context, text: String) {
         // Always write to the in-app log (does not depend on notification permission)
@@ -432,6 +424,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         closed = true
         pingThread?.interrupt()
         pingThread = null
+        ConnectionHub.detachHandler(this)
         remoteOps.shutdownNow()
         remotes.values.forEach { it.close() }
         sinks.values.forEach { it.abort() }

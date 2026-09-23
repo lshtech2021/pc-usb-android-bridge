@@ -15,6 +15,8 @@ object FrameIO {
     const val FILE_META = 0x02; const val FILE_CHUNK = 0x03; const val FILE_END = 0x04
     const val REMOTE_OPEN = 0x10; const val REMOTE_DATA = 0x11
     const val REMOTE_OUTPUT = 0x12; const val REMOTE_CLOSE = 0x13
+    const val CONN_LIST = 0x14; const val CONN_LIST_RESULT = 0x15
+    const val CONN_ATTACH = 0x16; const val CONN_DETACH = 0x17
     const val ACK = 0x20; const val ERROR = 0x21; const val PING = 0x30; const val PONG = 0x31
 
     /** Phone-side id space starts at 0x40000000 to avoid colliding with the PC side (starting at 1) */
