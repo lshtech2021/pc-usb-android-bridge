@@ -125,14 +125,15 @@ class ConnectionsActivity : AppCompatActivity() {
                     "Auth: $authHint · State: $state" +
                     if (!err.isNullOrBlank()) "\nError: $err" else ""
                 textSize = 15f
+                setTextIsSelectable(true)
             })
             val fp = TofuHostKeys.fingerprintOf(TofuHostKeys.storeFile(this), p.host, p.port)
             row.addView(TextView(this).apply {
                 textSize = 13f
                 setPadding(0, 4, 0, 4)
+                setTextIsSelectable(true)
                 if (fp != null) {
-                    text = "Host key (full, long-press to copy):\n$fp"
-                    setTextIsSelectable(true)
+                    text = "Host key (full — long-press or Copy):\n$fp"
                     setOnLongClickListener {
                         AuthPrompts.copyText(this@ConnectionsActivity, "host-key", fp)
                         toast("Fingerprint copied")
@@ -142,28 +143,40 @@ class ConnectionsActivity : AppCompatActivity() {
                     text = "Host key: (none trusted yet)"
                 }
             })
-            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            fun btn(label: String, enabled: Boolean = true, click: () -> Unit) =
-                Button(this).apply {
-                    text = label
-                    isEnabled = enabled
-                    setOnClickListener { click() }
-                }.also { actions.addView(it) }
-            btn("Start", state != ConnectionHub.STATE_RUNNING && state != ConnectionHub.STATE_STARTING) {
-                ConnectionHub.start(this, p.id)
+            // Two rows so Forget / Delete stay on-screen (horizontal overflow hid them)
+            fun actionRow(vararg specs: Pair<String, () -> Unit>): LinearLayout {
+                val rowLay = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(0, 4, 0, 0)
+                }
+                specs.forEach { (label, click) ->
+                    rowLay.addView(Button(this).apply {
+                        text = label
+                        setOnClickListener { click() }
+                        // Smaller padding so more buttons fit
+                        setPadding(16, 8, 16, 8)
+                    })
+                }
+                return rowLay
             }
-            btn("Stop", state == ConnectionHub.STATE_RUNNING || state == ConnectionHub.STATE_STARTING) {
-                ConnectionHub.stop(p.id)
-            }
-            btn("Edit") { editDialog(p) }
+            row.addView(actionRow(
+                "Start" to {
+                    if (state != ConnectionHub.STATE_RUNNING && state != ConnectionHub.STATE_STARTING)
+                        ConnectionHub.start(this, p.id)
+                    else toast("${p.id} already $state")
+                },
+                "Stop" to { ConnectionHub.stop(p.id) },
+                "Edit" to { editDialog(p) }
+            ))
+            val row2 = mutableListOf<Pair<String, () -> Unit>>()
             if (fp != null) {
-                btn("Copy host key") {
+                row2 += "Copy host key" to {
                     AuthPrompts.copyText(this, "host-key", fp)
                     toast("Fingerprint copied")
                 }
             }
-            btn("Forget host key") { confirmForgetHostKey(p) }
-            btn("Delete") {
+            row2 += "Forget host key" to { confirmForgetHostKey(p) }
+            row2 += "Delete" to {
                 AlertDialog.Builder(this)
                     .setMessage("Delete ${p.id}?")
                     .setPositiveButton("Delete") { _, _ ->
@@ -174,7 +187,7 @@ class ConnectionsActivity : AppCompatActivity() {
                     .setNegativeButton("Cancel", null)
                     .show()
             }
-            row.addView(actions)
+            row.addView(actionRow(*row2.toTypedArray()))
             listBox.addView(row)
         }
     }

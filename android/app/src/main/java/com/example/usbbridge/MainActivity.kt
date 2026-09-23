@@ -60,15 +60,25 @@ class MainActivity : AppCompatActivity() {
             notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)   // Otherwise the "PC message arrived" alert would not be received
         }
 
-        info = TextView(this).apply { textSize = 16f }
+        info = TextView(this).apply {
+            textSize = 16f
+            setTextIsSelectable(true)
+        }
         saveFolderLabel = TextView(this).apply {
             textSize = 14f
             setPadding(0, 16, 0, 4)
+            setTextIsSelectable(true)
         }
         msgLog = TextView(this).apply {
             textSize = 15f
             setPadding(0, 8, 0, 8)
             text = "(no messages yet)"
+            setTextIsSelectable(true)
+        }
+        val msgTitle = TextView(this).apply {
+            text = "Received messages (long-press to copy)"
+            textSize = 16f
+            setPadding(0, 24, 0, 4)
         }
         val start = Button(this).apply { text = "Start USB Bridge service" }
         val connections = Button(this).apply {
@@ -86,11 +96,6 @@ class MainActivity : AppCompatActivity() {
         val sendText = Button(this).apply { text = "Send text to PC" }
         val sendFile = Button(this).apply { text = "Send file to PC" }
         input = EditText(this).apply { hint = "Enter text to send to the PC" }
-        val msgTitle = TextView(this).apply {
-            text = "Received messages"
-            textSize = 16f
-            setPadding(0, 24, 0, 4)
-        }
         val msgScroll = ScrollView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
