@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace 'com.example.usbbridge'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.example.usbbridge"
@@ -33,8 +33,8 @@ android {
 }
 
 dependencies {
-    implementation 'androidx.appcompat:appcompat:1.6.1'
-    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.7.1'
+    implementation 'androidx.core:core-ktx:1.16.0'
     implementation 'androidx.documentfile:documentfile:1.0.1'
     implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     implementation 'com.jcraft:jsch:0.1.55'
