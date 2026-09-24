@@ -1,7 +1,8 @@
 """Interactive VT100 terminal widget backed by pyte (120x30 to match phone PTY).
 
 Copy/paste: Ctrl+Shift+C / Ctrl+Shift+V (or context menu). Ctrl+C with a selection
-copies; otherwise sends interrupt (0x03) to the remote.
+copies; otherwise sends interrupt (0x03) to the remote. Ctrl+wheel / Ctrl+plus /
+Ctrl+minus zoom the font.
 """
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QKeyEvent, QTextCursor, QKeySequence
@@ -9,22 +10,24 @@ from PyQt5.QtWidgets import QApplication, QPlainTextEdit, QAction, QMenu
 
 import pyte
 
+import theme
+
 
 COLS, ROWS = 120, 30
+MIN_FONT_SIZE, MAX_FONT_SIZE = 7, 26
 
 
 class TerminalWidget(QPlainTextEdit):
     """Renders remote output via pyte and emits raw key bytes for REMOTE_DATA."""
     bytes_out = pyqtSignal(object)   # bytes
+    zoom_changed = pyqtSignal(int)   # font point size
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
         self.setUndoRedoEnabled(False)
-        font = QFont("Consolas", 11)
-        font.setStyleHint(QFont.Monospace)
-        self.setFont(font)
-        self.setStyleSheet("QPlainTextEdit { background: #1e1e1e; color: #d4d4d4; }")
+        self._font_size = 11
+        self._apply_font()
         self._screen = pyte.Screen(COLS, ROWS)
         self._stream = pyte.ByteStream(self._screen)
         self._attached = False
@@ -33,6 +36,40 @@ class TerminalWidget(QPlainTextEdit):
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
+        self.apply_theme()
+
+    # ---- Appearance ----
+    def apply_theme(self):
+        """A terminal stays dark in both palettes, but the exact tones are tokens."""
+        self.setStyleSheet(
+            "QPlainTextEdit { background: %s; color: %s; }"
+            % (theme.color("term_bg"), theme.color("term_fg")))
+
+    def _apply_font(self):
+        font = QFont("Consolas", self._font_size)
+        font.setStyleHint(QFont.Monospace)
+        self.setFont(font)
+        self.zoom_changed.emit(self._font_size)
+
+    def font_size(self) -> int:
+        return self._font_size
+
+    def zoom(self, delta: int):
+        target = max(MIN_FONT_SIZE, min(MAX_FONT_SIZE, self._font_size + delta))
+        if target != self._font_size:
+            self._font_size = target
+            self._apply_font()
+
+    def reset_zoom(self):
+        self._font_size = 11
+        self._apply_font()
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            self.zoom(1 if event.angleDelta().y() > 0 else -1)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def clear_screen(self):
         self._screen.reset()
@@ -78,11 +115,12 @@ class TerminalWidget(QPlainTextEdit):
             self.setTextCursor(cur)
 
     def _context_menu(self, pos):
+        # A tab in the action text is rendered as the shortcut column by QMenu.
         menu = QMenu(self)
-        act_copy = QAction("Copy", self)
+        act_copy = QAction("Copy\tCtrl+Shift+C", self)
         act_copy.setEnabled(self.textCursor().hasSelection())
         act_copy.triggered.connect(self.copy)
-        act_paste = QAction("Paste", self)
+        act_paste = QAction("Paste\tCtrl+Shift+V", self)
         act_paste.setEnabled(self._attached and bool(QApplication.clipboard().text()))
         act_paste.triggered.connect(self._paste_clipboard)
         act_select = QAction("Select all", self)
@@ -91,6 +129,18 @@ class TerminalWidget(QPlainTextEdit):
         menu.addAction(act_paste)
         menu.addSeparator()
         menu.addAction(act_select)
+        menu.addSeparator()
+        act_bigger = QAction("Bigger text\tCtrl++", self)
+        act_bigger.setEnabled(self._font_size < MAX_FONT_SIZE)
+        act_bigger.triggered.connect(lambda: self.zoom(1))
+        act_smaller = QAction("Smaller text\tCtrl+-", self)
+        act_smaller.setEnabled(self._font_size > MIN_FONT_SIZE)
+        act_smaller.triggered.connect(lambda: self.zoom(-1))
+        act_reset = QAction("Reset text size\tCtrl+0", self)
+        act_reset.triggered.connect(self.reset_zoom)
+        menu.addAction(act_bigger)
+        menu.addAction(act_smaller)
+        menu.addAction(act_reset)
         menu.exec_(self.mapToGlobal(pos))
 
     def _paste_clipboard(self):
@@ -103,13 +153,27 @@ class TerminalWidget(QPlainTextEdit):
             self.bytes_out.emit(text.encode("utf-8", "ignore"))
 
     def keyPressEvent(self, event: QKeyEvent):
-        if not self._attached:
-            return super().keyPressEvent(event)
-
         key = event.key()
         mods = event.modifiers()
         ctrl = bool(mods & Qt.ControlModifier)
         shift = bool(mods & Qt.ShiftModifier)
+
+        # Zoom works whether or not a session is attached.
+        if ctrl and key in (Qt.Key_Plus, Qt.Key_Equal):
+            self.zoom(1)
+            event.accept()
+            return
+        if ctrl and key == Qt.Key_Minus:
+            self.zoom(-1)
+            event.accept()
+            return
+        if ctrl and key == Qt.Key_0:
+            self.reset_zoom()
+            event.accept()
+            return
+
+        if not self._attached:
+            return super().keyPressEvent(event)
 
         # Ctrl+Shift+C / Ctrl+Insert → copy
         if (ctrl and shift and key == Qt.Key_C) or (ctrl and key == Qt.Key_Insert):

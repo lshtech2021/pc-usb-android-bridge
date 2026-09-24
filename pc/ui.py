@@ -5,17 +5,59 @@ Run: py ui.py
 import sys
 
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
-from PyQt5.QtGui import QKeySequence
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut, QTabWidget,
-    QLineEdit, QProgressBar, QFileDialog, QMessageBox,
+from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
+from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QWidget,
+    QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
+    QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
     QTableWidgetItem)
 
+import settings
 import theme
 import widgets
 from adb_manager import Adb
 from client import PhoneClient
 from terminal import TerminalWidget
+
+# Phone-reported connection state -> palette key for the picker dot.
+CONNECTION_DOT = {
+    "running": "dot_connected",
+    "starting": "dot_connecting",
+    "error": "dot_error",
+    "stopped": "dot_disconnected",
+}
+
+TERMINAL_STATES = {
+    "detached": ("dot_disconnected", "Not attached"),
+    "attaching": ("dot_connecting", "Attaching…"),
+    "attached": ("dot_connected", "Attached"),
+    "error": ("dot_error", "Attach failed"),
+}
+
+SHORTCUTS = [
+    ("F5", "Refresh the USB device list"),
+    ("Ctrl+K", "Connect to the selected device"),
+    ("Ctrl+R", "Refresh the phone's SSH connection list"),
+    ("Ctrl+Enter", "Send the typed message"),
+    ("Ctrl+=  /  Ctrl+-", "Bigger / smaller terminal text"),
+    ("Ctrl+0", "Reset terminal text size"),
+    ("Ctrl+Shift+C", "Copy from the terminal"),
+    ("Ctrl+Shift+V", "Paste into the terminal"),
+    ("Ctrl+C", "Terminal: copy if text is selected, else interrupt the remote"),
+    ("Ctrl+Q", "Quit"),
+]
+
+
+def state_dot_icon(color_key: str) -> QIcon:
+    """Small filled circle used to mark connection state in the picker."""
+    pm = QPixmap(10, 10)
+    pm.fill(Qt.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(theme.color(color_key)))
+    painter.drawEllipse(0, 0, 9, 9)
+    painter.end()
+    return QIcon(pm)
 
 PC_PORT, PHONE_PORT = 12580, 9999
 
@@ -65,6 +107,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._msg_tab(), "Messages")
         self.tabs.addTab(self._file_tab(), "Files")
         self.tabs.addTab(self._term_tab(), "Remote Terminal")
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         root = QWidget(); root.setObjectName("root")
         lay = QVBoxLayout(root)
         lay.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
@@ -72,10 +115,144 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._build_header())
         lay.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
-        QShortcut(QKeySequence("F5"), self, activated=self.refresh)
-        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.connect_phone)
+        self._build_menus()
+        self.statusBar().setSizeGripEnabled(True)
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send_text)
+
+        self._restore_window_state()
         self.refresh()
+        self._on_tab_changed(self.tabs.currentIndex())
+
+    # ---- Menu bar and status bar ----
+    def _menu_action(self, menu, text, slot, shortcut=None, checkable=False):
+        act = QAction(text, self)
+        if shortcut:
+            act.setShortcut(QKeySequence(shortcut))
+        act.setCheckable(checkable)
+        # triggered only fires on user activation, so a checkable action must use
+        # toggled for setChecked() from code (startup restore) to take effect.
+        if checkable:
+            act.toggled.connect(slot)
+        else:
+            act.triggered.connect(slot)
+        menu.addAction(act)
+        return act
+
+    def _build_menus(self):
+        bar = self.menuBar()
+        m_file = bar.addMenu("&File")
+        self._menu_action(m_file, "&Refresh devices", self.refresh, "F5")
+        self._menu_action(m_file, "&Connect", self.connect_phone, "Ctrl+K")
+        self._menu_action(m_file, "&Disconnect", self.disconnect_phone)
+        m_file.addSeparator()
+        self._menu_action(m_file, "Open &received folder",
+                          lambda: widgets.open_in_file_manager(self.client.save_dir))
+        m_file.addSeparator()
+        self._menu_action(m_file, "E&xit", self.close, "Ctrl+Q")
+
+        m_conn = bar.addMenu("&Connection")
+        self._menu_action(m_conn, "&Refresh list", self.refresh_connections, "Ctrl+R")
+        self._menu_action(m_conn, "&Attach", self.attach_conn)
+        self._menu_action(m_conn, "De&tach", self.detach_conn)
+
+        m_view = bar.addMenu("&View")
+        self.act_dark = self._menu_action(
+            m_view, "&Dark mode", self._set_dark, checkable=True)
+        m_view.addSeparator()
+        self._menu_action(m_view, "&Bigger terminal text",
+                          lambda: self.term.zoom(1), "Ctrl+=")
+        self._menu_action(m_view, "&Smaller terminal text",
+                          lambda: self.term.zoom(-1), "Ctrl+-")
+        self._menu_action(m_view, "&Reset terminal text size",
+                          lambda: self.term.reset_zoom(), "Ctrl+0")
+
+        m_help = bar.addMenu("&Help")
+        self._menu_action(m_help, "&Keyboard shortcuts", self._show_shortcuts)
+        self._menu_action(m_help, "&About", self._show_about)
+
+    def _set_dark(self, on: bool):
+        theme.set_palette("dark" if on else "light")
+        settings.put(settings.KEY_PALETTE, theme.palette_name())
+        self._apply_theme()
+
+    def _apply_theme(self):
+        """Re-style everything that does not come from the app style sheet."""
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(theme.stylesheet())
+        self.chip.apply()
+        self.term_pill.apply()
+        self.ftab.apply_theme()
+        self.term.apply_theme()
+        for i in range(self.cmb_conn.count()):
+            state = self.cmb_conn.itemData(i, Qt.UserRole + 1)
+            if state:
+                self.cmb_conn.setItemIcon(i, state_dot_icon(CONNECTION_DOT.get(
+                    state, "dot_disconnected")))
+        if self.act_dark.isChecked() != (theme.palette_name() == "dark"):
+            self.act_dark.setChecked(theme.palette_name() == "dark")
+
+    def _status(self, text: str, timeout: int = 0):
+        self.statusBar().showMessage(text, timeout)
+
+    def _on_tab_changed(self, index: int):
+        settings.put(settings.KEY_TAB, index)
+        if index == 2:
+            self._status("Copy: Ctrl+Shift+C · Paste: Ctrl+Shift+V · "
+                         "Zoom: Ctrl+= / Ctrl+- / Ctrl+0")
+        else:
+            self._status("")
+
+    def _show_shortcuts(self):
+        rows = "".join(
+            f"<tr><td style='padding-right:18px'><b>{key}</b></td>"
+            f"<td>{desc}</td></tr>" for key, desc in SHORTCUTS)
+        QMessageBox.information(
+            self, "Keyboard shortcuts", f"<table>{rows}</table>")
+
+    def _show_about(self):
+        QMessageBox.about(
+            self, "About USB Bridge",
+            "<b>USB Bridge Client</b><br><br>"
+            "Talks to the USB Bridge Android app over an adb-forwarded socket.<br>"
+            "After the handshake the link is sealed with ECDH + AES-GCM; "
+            "SSH credentials stay on the phone.")
+
+    # ---- Persistence ----
+    def _restore_window_state(self):
+        theme.set_palette(settings.get(settings.KEY_PALETTE, "light"))
+        self.act_dark.setChecked(theme.palette_name() == "dark")
+        self._apply_theme()
+        geometry = settings.get(settings.KEY_GEOMETRY)
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        try:
+            tab = int(settings.get(settings.KEY_TAB, 0))
+        except (TypeError, ValueError):
+            tab = 0
+        if 0 <= tab < self.tabs.count():
+            self.tabs.setCurrentIndex(tab)
+        try:
+            size = int(settings.get(settings.KEY_FONT_SIZE, 11))
+        except (TypeError, ValueError):
+            size = 11
+        self.term.zoom(size - self.term.font_size())
+
+    def closeEvent(self, event):
+        settings.put(settings.KEY_GEOMETRY, self.saveGeometry())
+        settings.put(settings.KEY_TAB, self.tabs.currentIndex())
+        settings.put(settings.KEY_DEVICE, self.cmb.currentData() or "")
+        settings.put(settings.KEY_PALETTE, theme.palette_name())
+        settings.put(settings.KEY_FONT_SIZE, self.term.font_size())
+        settings.sync()
+        if self.ch is not None:
+            try:
+                self.client.detach(self.ch)
+            except Exception:
+                pass
+            self.ch = None
+        self.client.close()
+        super().closeEvent(event)
 
     def _build_header(self):
         """Two grouped rows: connection fields, then actions + identity + status."""
@@ -152,7 +329,7 @@ class MainWindow(QMainWindow):
         self._refresh_fingerprint()
         actions.addWidget(identity, 1)
 
-        self.chip = theme.StatusChip()
+        self.chip = theme.connection_pill()
         actions.addWidget(self.chip, 0, Qt.AlignRight)
         outer.addLayout(actions)
 
@@ -246,10 +423,13 @@ class MainWindow(QMainWindow):
             self._reset_attach()
         elif "adb unavailable" in low:
             self._set_conn_state("error", "adb unavailable")
+        if "error" in low or "bad_token" in low or "rejected" in low or "unavailable" in low:
+            self._status(s, 8000)
 
     def _hello_ack(self, info):
         serial = self.cmb.currentData() or "?"
         self._set_conn_state("connected", f"{serial} · encrypted")
+        self._status(f"Connected to {serial} — link sealed", 6000)
         self.msg_log.add_notice(
             f"Phone connected: {info.get('device', '?')} · link sealed")
         self.client.list_connections()
@@ -374,24 +554,41 @@ class MainWindow(QMainWindow):
     # ---- Tab3 Remote terminal (attach by phone connection ID) ----
     def _term_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
+        v.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
+        v.setSpacing(theme.SPACE_S)
         h = QHBoxLayout()
+        h.setSpacing(theme.SPACE_S)
         self.cmb_conn = QComboBox()
-        self.cmb_conn.setMinimumWidth(280)
-        br = QPushButton("Refresh list"); br.clicked.connect(self.refresh_connections)
-        ba = QPushButton("Attach"); ba.clicked.connect(self.attach_conn)
-        bd = QPushButton("Detach"); bd.clicked.connect(self.detach_conn)
-        self.lbl_term = QLabel("Not attached — start a connection on the phone, then Attach")
-        h.addWidget(QLabel("Connection:")); h.addWidget(self.cmb_conn, 1)
-        h.addWidget(br); h.addWidget(ba); h.addWidget(bd)
+        self.cmb_conn.setMinimumWidth(320)
+        self.cmb_conn.setToolTip("SSH profiles on the phone; the dot shows whether it is running")
+        self.btn_conn_refresh = QPushButton("Refresh list")
+        self.btn_conn_refresh.setToolTip("Ask the phone for its connection list (Ctrl+R)")
+        self.btn_conn_refresh.clicked.connect(self.refresh_connections)
+        self.btn_conn_attach = QPushButton("Attach")
+        self.btn_conn_attach.setProperty("variant", "primary")
+        self.btn_conn_attach.setToolTip("Open an interactive terminal on the selected connection")
+        self.btn_conn_attach.clicked.connect(self.attach_conn)
+        self.btn_conn_detach = QPushButton("Detach")
+        self.btn_conn_detach.setToolTip("Leave the session running on the phone")
+        self.btn_conn_detach.clicked.connect(self.detach_conn)
+        h.addWidget(theme.field_label("Connection"))
+        h.addWidget(self.cmb_conn, 1)
+        h.addWidget(self.btn_conn_refresh)
+        h.addWidget(self.btn_conn_attach)
+        h.addWidget(self.btn_conn_detach)
         v.addLayout(h)
-        v.addWidget(self.lbl_term)
+
+        self.term_pill = theme.StatePill(TERMINAL_STATES, "detached")
+        v.addWidget(self.term_pill, 0, Qt.AlignLeft)
+
         self.term = TerminalWidget()
         self.term.bytes_out.connect(self._term_bytes)
         v.addWidget(self.term, 1)
-        v.addWidget(QLabel(
-            "Interactive terminal (pyte). Copy: Ctrl+Shift+C or selection+Ctrl+C; "
-            "Paste: Ctrl+Shift+V / Ctrl+V. Right-click for menu."))
+        self._set_term_state("detached", "start one on the phone, then Attach")
         return w
+
+    def _set_term_state(self, state: str, detail: str = ""):
+        self.term_pill.set_state(state, detail)
 
     def refresh_connections(self):
         if not (self.client.tp and self.client.tp.alive):
@@ -405,8 +602,17 @@ class MainWindow(QMainWindow):
         for c in self._conn_items:
             cid = c.get("id", "?")
             state = c.get("state", "?")
-            label = f"{cid}  {c.get('name', '')}  {c.get('user', '')}@{c.get('host', '')}  [{state}]"
-            self.cmb_conn.addItem(label, cid)
+            label = (f"{cid}  {c.get('name', '')}  "
+                     f"{c.get('user', '')}@{c.get('host', '')}  · {state}")
+            self.cmb_conn.addItem(
+                state_dot_icon(CONNECTION_DOT.get(state, "dot_disconnected")), label, cid)
+            # Remember the raw state so a palette change can redraw the dot.
+            self.cmb_conn.setItemData(self.cmb_conn.count() - 1, state, Qt.UserRole + 1)
+            if state != "running":
+                self.cmb_conn.setItemData(
+                    self.cmb_conn.count() - 1,
+                    "Only a running connection can be attached — start it on the phone",
+                    Qt.ToolTipRole)
         if cur:
             i = self.cmb_conn.findData(cur)
             if i >= 0:
@@ -421,7 +627,7 @@ class MainWindow(QMainWindow):
         if self.ch is not None:
             self.detach_conn()
         self.term.clear_screen()
-        self.lbl_term.setText(f"Attaching to {cid}…")
+        self._set_term_state("attaching", str(cid))
         self.ch = self.client.attach(cid)
 
     def detach_conn(self):
@@ -432,16 +638,16 @@ class MainWindow(QMainWindow):
     def _reset_attach(self):
         self.ch = None
         self.term.set_attached(False)
-        self.lbl_term.setText("Not attached — start a connection on the phone, then Attach")
+        self._set_term_state("detached", "start one on the phone, then Attach")
 
     def _on_attach(self, h, backlog):
         if not h.get("ok"):
-            self.lbl_term.setText(f"Attach failed")
+            self._set_term_state("error", str(h.get("message", "")))
             self.ch = None
             return
         cid = h.get("connection_id", "?")
         self.ch = h.get("channel", self.ch)
-        self.lbl_term.setText(f"Attached to {cid} (channel {self.ch})")
+        self._set_term_state("attached", f"{cid} · channel {self.ch}")
         self.term.set_attached(True)
         if backlog:
             self.term.feed(bytes(backlog))
@@ -457,13 +663,13 @@ class MainWindow(QMainWindow):
 
     def _on_rclose(self, ch, code, reason):
         if ch == self.ch:
-            self.lbl_term.setText(f"Session closed code={code} {reason}")
+            self._set_term_state("detached", f"session closed ({code})")
             self.term.set_attached(False)
             self.ch = None
 
     def _on_rerr(self, ch, code, h):
         msg = h.get("message", "")
-        self.lbl_term.setText(f"Error {code}: {msg}")
+        self._set_term_state("error", f"{code}: {msg}" if msg else str(code))
         if ch == self.ch or code in ("CONN_NOT_RUNNING", "CONN_BUSY", "CONN_NOT_FOUND"):
             self.term.set_attached(False)
             if ch == self.ch:
@@ -472,6 +678,8 @@ class MainWindow(QMainWindow):
 
     # ---- USB connection management ----
     def refresh(self):
+        # Rescanning clears the list, so remember what the user had selected.
+        keep = self.cmb.currentData() or settings.get(settings.KEY_DEVICE, "")
         self.cmb.clear()
         try:
             for d in self.adb.devices():
@@ -479,6 +687,10 @@ class MainWindow(QMainWindow):
                     self.cmb.addItem(d["desc"], d["serial"])
         except Exception as e:
             self._on_status(f"[adb unavailable] {e}")
+        if keep:
+            index = self.cmb.findData(keep)
+            if index >= 0:
+                self.cmb.setCurrentIndex(index)
 
     def connect_phone(self):
         serial = self.cmb.currentData()
@@ -519,5 +731,7 @@ if __name__ == "__main__":
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    # Paint in the saved palette from the first frame to avoid a light flash.
+    theme.set_palette(str(settings.get(settings.KEY_PALETTE, "light")))
     app.setStyleSheet(theme.stylesheet())
     w = MainWindow(); w.show(); sys.exit(app.exec_())

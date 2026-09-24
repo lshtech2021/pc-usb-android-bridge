@@ -11,6 +11,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel,
                              QScrollArea, QTableWidget, QVBoxLayout, QWidget)
 
+import theme
 from theme import BUBBLE_MAX_FRACTION, SPACE_M, SPACE_S, SPACE_XS
 
 
@@ -138,8 +139,8 @@ class FileDropTable(QTableWidget):
     files_dropped = pyqtSignal(list)
 
     COLUMNS = ["File", "Direction", "Progress", "Status", "Action"]
-    EMPTY_TEXT = ("Drag files here to send to the phone"
-                  "<br><span style='color:#9096A1'>or use Add files…</span>")
+    EMPTY_HEADLINE = "Drag files here to send to the phone"
+    EMPTY_HINT = "or use Add files…"
 
     def __init__(self, parent=None):
         super().__init__(0, len(self.COLUMNS), parent)
@@ -164,14 +165,20 @@ class FileDropTable(QTableWidget):
         self.setColumnWidth(2, 130)
         self.setColumnWidth(3, 300)
 
-        self._empty = QLabel(self.EMPTY_TEXT, self.viewport())
+        self._empty = QLabel(self.viewport())
         self._empty.setObjectName("fileEmpty")
         self._empty.setAlignment(Qt.AlignCenter)
         self._empty.setWordWrap(True)
         self._empty.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.apply_theme()
         self.refresh_empty_state()
 
     # ---- Empty state ----
+    def apply_theme(self):
+        self._empty.setText(
+            f"{self.EMPTY_HEADLINE}<br>"
+            f"<span style='color:{theme.color('text_faint')}'>{self.EMPTY_HINT}</span>")
+
     def refresh_empty_state(self):
         self._empty.setVisible(self.rowCount() == 0)
         self._place_empty()
