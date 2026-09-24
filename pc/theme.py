@@ -7,7 +7,7 @@ stylesheet() to switch between light and dark.
 from string import Template
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
+from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget)
 
 # ---- Spacing scale (px) ----
 SPACE_XS = 4
@@ -290,6 +290,8 @@ class StatePill(QWidget):
     def __init__(self, states=None, initial="default", parent=None):
         super().__init__(parent)
         self.setObjectName("statePill")
+        # Hug the content: a pill that stretched to fill its row would read as a banner.
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self._states = states or self.DEFAULT_STATES
         lay = QHBoxLayout(self)
         lay.setContentsMargins(int(SPACE_M), int(SPACE_XS), int(SPACE_M), int(SPACE_XS))

@@ -16,6 +16,7 @@ import theme
 import widgets
 from adb_manager import Adb
 from client import PhoneClient
+from dialogs import ConnectionDialog
 from terminal import TerminalWidget
 
 # Phone-reported connection state -> palette key for the picker dot.
@@ -34,10 +35,13 @@ TERMINAL_STATES = {
 }
 
 SHORTCUTS = [
+    ("Ctrl+,", "Open connection settings (device, token, PC name)"),
     ("F5", "Refresh the USB device list"),
     ("Ctrl+K", "Connect to the selected device"),
     ("Ctrl+R", "Refresh the phone's SSH connection list"),
     ("Ctrl+Enter", "Send the typed message"),
+    ("F11", "Toggle full-screen terminal"),
+    ("Escape", "Leave full screen (when no session is attached)"),
     ("Ctrl+=  /  Ctrl+-", "Bigger / smaller terminal text"),
     ("Ctrl+0", "Reset terminal text size"),
     ("Ctrl+Shift+C", "Copy from the terminal"),
@@ -82,6 +86,7 @@ class MainWindow(QMainWindow):
         self._conn_items = []   # list of connection dicts from phone
         self._rows = {}
         self._conn_state = "disconnected"
+        self._fullscreen = False
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -103,21 +108,33 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
+        self.dlg = ConnectionDialog(self)
+        self.dlg.connect_requested.connect(self.connect_phone)
+        self.dlg.disconnect_requested.connect(self.disconnect_phone)
+        self.dlg.refresh_requested.connect(self.refresh)
+        self.dlg.device_changed.connect(self._on_device_changed)
+        self.dlg.set_pc_name(self.client.identity.pc_name)
+        self.dlg.set_identity(self.client.identity.short_id, self.client.identity.pc_id)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self._msg_tab(), "Messages")
         self.tabs.addTab(self._file_tab(), "Files")
         self.tabs.addTab(self._term_tab(), "Remote Terminal")
         self.tabs.currentChanged.connect(self._on_tab_changed)
+
+        self.strip = self._build_strip()
         root = QWidget(); root.setObjectName("root")
         lay = QVBoxLayout(root)
-        lay.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
-        lay.setSpacing(theme.SPACE_M)
-        lay.addWidget(self._build_header())
+        # No bottom margin: the tab pane should sit straight on the status bar.
+        lay.setContentsMargins(theme.SPACE_S, theme.SPACE_XS, theme.SPACE_S, 0)
+        lay.setSpacing(theme.SPACE_S)
+        lay.addWidget(self.strip)
         lay.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
         self._build_menus()
-        self.statusBar().setSizeGripEnabled(True)
+        self.statusBar().setSizeGripEnabled(False)
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send_text)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=self.open_connection_dialog)
 
         self._restore_window_state()
         self.refresh()
@@ -141,6 +158,9 @@ class MainWindow(QMainWindow):
     def _build_menus(self):
         bar = self.menuBar()
         m_file = bar.addMenu("&File")
+        self._menu_action(m_file, "&Connection settings…",
+                          self.open_connection_dialog, "Ctrl+,")
+        m_file.addSeparator()
         self._menu_action(m_file, "&Refresh devices", self.refresh, "F5")
         self._menu_action(m_file, "&Connect", self.connect_phone, "Ctrl+K")
         self._menu_action(m_file, "&Disconnect", self.disconnect_phone)
@@ -156,6 +176,10 @@ class MainWindow(QMainWindow):
         self._menu_action(m_conn, "De&tach", self.detach_conn)
 
         m_view = bar.addMenu("&View")
+        self.act_fullscreen = self._menu_action(
+            m_view, "&Full screen terminal", self._set_fullscreen,
+            "F11", checkable=True)
+        m_view.addSeparator()
         self.act_dark = self._menu_action(
             m_view, "&Dark mode", self._set_dark, checkable=True)
         m_view.addSeparator()
@@ -182,6 +206,7 @@ class MainWindow(QMainWindow):
             app.setStyleSheet(theme.stylesheet())
         self.chip.apply()
         self.term_pill.apply()
+        self.dlg.apply_theme()
         self.ftab.apply_theme()
         self.term.apply_theme()
         for i in range(self.cmb_conn.count()):
@@ -241,7 +266,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         settings.put(settings.KEY_GEOMETRY, self.saveGeometry())
         settings.put(settings.KEY_TAB, self.tabs.currentIndex())
-        settings.put(settings.KEY_DEVICE, self.cmb.currentData() or "")
+        settings.put(settings.KEY_DEVICE, self.dlg.selected_serial() or "")
         settings.put(settings.KEY_PALETTE, theme.palette_name())
         settings.put(settings.KEY_FONT_SIZE, self.term.font_size())
         settings.sync()
@@ -254,100 +279,57 @@ class MainWindow(QMainWindow):
         self.client.close()
         super().closeEvent(event)
 
-    def _build_header(self):
-        """Two grouped rows: connection fields, then actions + identity + status."""
+    def _build_strip(self):
+        """One slim row of connection chrome; the form itself lives in the dialog."""
         card = QWidget(); card.setObjectName("header")
-        outer = QVBoxLayout(card)
-        outer.setContentsMargins(theme.SPACE_L, theme.SPACE_M, theme.SPACE_L, theme.SPACE_M)
-        outer.setSpacing(theme.SPACE_M)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(theme.SPACE_M, theme.SPACE_XS, theme.SPACE_M, theme.SPACE_XS)
+        row.setSpacing(theme.SPACE_S)
 
-        # Row 1 - device / token / PC name, separated into logical groups.
-        fields = QHBoxLayout()
-        fields.setSpacing(theme.SPACE_S)
-        self.cmb = QComboBox()
-        self.cmb.setToolTip("USB device reported by adb")
-        self.btn_refresh = QPushButton("Refresh")
-        self.btn_refresh.setToolTip("Re-scan adb for connected devices (F5)")
-        self.btn_refresh.clicked.connect(self.refresh)
-        self.ed_token = QLineEdit()
-        self.ed_token.setPlaceholderText("Token from phone")
-        self.ed_token.setEchoMode(QLineEdit.Password)
-        self.ed_token.setFixedWidth(130)
-        self.ed_token.setToolTip("8 hex digits shown on the phone")
-        self.btn_reveal = QPushButton("Show")
-        self.btn_reveal.setCheckable(True)
-        self.btn_reveal.setFixedWidth(58)
-        self.btn_reveal.setToolTip("Reveal the token")
-        self.btn_reveal.toggled.connect(self._toggle_token_visibility)
-        self.ed_pc_name = QLineEdit()
-        self.ed_pc_name.setPlaceholderText("PC display name")
-        self.ed_pc_name.setText(self.client.identity.pc_name)
-        self.ed_pc_name.setFixedWidth(150)
-        self.ed_pc_name.setToolTip("Name shown in the phone's Approve PC dialog")
-        fields.addWidget(theme.field_label("Device"))
-        fields.addWidget(self.cmb, 1)
-        fields.addWidget(self.btn_refresh)
-        fields.addWidget(theme.vertical_separator())
-        fields.addWidget(theme.field_label("Token"))
-        fields.addWidget(self.ed_token)
-        fields.addWidget(self.btn_reveal)
-        fields.addWidget(theme.vertical_separator())
-        fields.addWidget(theme.field_label("PC name"))
-        fields.addWidget(self.ed_pc_name)
-        outer.addLayout(fields)
-
-        # Row 2 - primary action, then identity, then the status chip pinned right.
-        actions = QHBoxLayout()
-        actions.setSpacing(theme.SPACE_S)
+        self.btn_connection = QPushButton("Connection…")
+        self.btn_connection.setToolTip("Device, token, PC name and fingerprint (Ctrl+,)")
+        self.btn_connection.clicked.connect(self.open_connection_dialog)
+        self.lbl_device = theme.caption("No device")
+        self.lbl_device.setToolTip("Device selected in the connection dialog")
         self.btn_connect = QPushButton("Connect")
         self.btn_connect.setProperty("variant", "primary")
         self.btn_connect.setToolTip("Forward the USB port and handshake with the phone (Ctrl+K)")
         self.btn_connect.clicked.connect(self.connect_phone)
         self.btn_disconnect = QPushButton("Disconnect")
         self.btn_disconnect.clicked.connect(self.disconnect_phone)
-        actions.addWidget(self.btn_connect)
-        actions.addWidget(self.btn_disconnect)
-        actions.addWidget(theme.vertical_separator())
 
-        self.lbl_fp = theme.caption("")
-        self.lbl_fp.setProperty("role", "mono")
-        self.btn_fp_copy = QPushButton("Copy")
-        self.btn_fp_copy.setProperty("variant", "subtle")
-        self.btn_fp_copy.setToolTip("Copy the full PC fingerprint")
-        self.btn_fp_copy.clicked.connect(self._copy_fingerprint)
-        identity = QWidget()
-        identity.setToolTip(
-            "The private key is never shown or sent. The phone asks you to approve\n"
-            "this PC the first time it connects; later connections use this fingerprint.")
-        id_lay = QHBoxLayout(identity)
-        id_lay.setContentsMargins(0, 0, 0, 0)
-        id_lay.setSpacing(theme.SPACE_S)
-        id_lay.addWidget(theme.caption("Fingerprint"))
-        id_lay.addWidget(self.lbl_fp)
-        id_lay.addWidget(self.btn_fp_copy)
-        id_lay.addStretch(1)
-        self._refresh_fingerprint()
-        actions.addWidget(identity, 1)
+        row.addWidget(self.btn_connection)
+        row.addWidget(theme.vertical_separator())
+        row.addWidget(self.lbl_device)
+        row.addStretch(1)
+        row.addWidget(self.btn_connect)
+        row.addWidget(self.btn_disconnect)
+        row.addWidget(theme.vertical_separator())
 
         self.chip = theme.connection_pill()
-        actions.addWidget(self.chip, 0, Qt.AlignRight)
-        outer.addLayout(actions)
-
-        self._set_conn_state("disconnected")
+        row.addWidget(self.chip, 0, Qt.AlignRight)
         return card
 
-    def _toggle_token_visibility(self, shown: bool):
-        self.ed_token.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
-        self.btn_reveal.setText("Hide" if shown else "Show")
+    # ---- Connection dialog ----
+    def open_connection_dialog(self):
+        self.dlg.present()
 
-    def _refresh_fingerprint(self):
-        ident = self.client.identity
-        self.lbl_fp.setText(f"{ident.short_id}…")
-        self.lbl_fp.setToolTip(ident.pc_id)
+    def _on_device_changed(self):
+        serial = self.dlg.selected_serial()
+        label = self.dlg.device_label()
+        self.lbl_device.setText(label or "No device")
+        self.lbl_device.setToolTip(serial or "")
+        settings.put(settings.KEY_DEVICE, serial or "")
 
-    def _copy_fingerprint(self):
-        QApplication.clipboard().setText(self.client.identity.pc_id)
-        self._flash(self.btn_fp_copy, "Copy", "Copied")
+    def _refresh_device_list(self):
+        devices = []
+        try:
+            for d in self.adb.devices():
+                if d["state"] == "device":
+                    devices.append((d["desc"], d["serial"]))
+        except Exception as e:
+            self._on_status(f"[adb unavailable] {e}")
+        self.dlg.set_devices(devices)
 
     def _flash(self, button, restore: str, temporary: str):
         button.setText(temporary)
@@ -357,6 +339,7 @@ class MainWindow(QMainWindow):
         """Single source of truth for the chip and for which actions are available."""
         self._conn_state = state
         self.chip.set_state(state, detail)
+        self.dlg.set_state(state, detail)
         self.btn_connect.setEnabled(state in ("disconnected", "error"))
         # Disconnect doubles as "cancel" while a handshake is still in flight.
         self.btn_disconnect.setEnabled(state in ("connecting", "connected"))
@@ -427,7 +410,7 @@ class MainWindow(QMainWindow):
             self._status(s, 8000)
 
     def _hello_ack(self, info):
-        serial = self.cmb.currentData() or "?"
+        serial = self.dlg.selected_serial() or "?"
         self._set_conn_state("connected", f"{serial} · encrypted")
         self._status(f"Connected to {serial} — link sealed", 6000)
         self.msg_log.add_notice(
@@ -571,11 +554,17 @@ class MainWindow(QMainWindow):
         self.btn_conn_detach = QPushButton("Detach")
         self.btn_conn_detach.setToolTip("Leave the session running on the phone")
         self.btn_conn_detach.clicked.connect(self.detach_conn)
+        self.btn_fullscreen = QPushButton("Full screen")
+        self.btn_fullscreen.setCheckable(True)
+        self.btn_fullscreen.setToolTip("Hide all chrome and give the terminal the window (F11)")
+        self.btn_fullscreen.toggled.connect(self._set_fullscreen)
         h.addWidget(theme.field_label("Connection"))
         h.addWidget(self.cmb_conn, 1)
         h.addWidget(self.btn_conn_refresh)
         h.addWidget(self.btn_conn_attach)
         h.addWidget(self.btn_conn_detach)
+        h.addWidget(theme.vertical_separator())
+        h.addWidget(self.btn_fullscreen)
         v.addLayout(h)
 
         self.term_pill = theme.StatePill(TERMINAL_STATES, "detached")
@@ -583,9 +572,28 @@ class MainWindow(QMainWindow):
 
         self.term = TerminalWidget()
         self.term.bytes_out.connect(self._term_bytes)
+        self.term.escape_out.connect(self._exit_fullscreen)
         v.addWidget(self.term, 1)
         self._set_term_state("detached", "start one on the phone, then Attach")
         return w
+
+    def _set_fullscreen(self, on: bool):
+        """Terminal-only mode: drop every piece of chrome around the terminal."""
+        self._fullscreen = on
+        self.menuBar().setVisible(not on)
+        self.strip.setVisible(not on)
+        self.tabs.tabBar().setVisible(not on)
+        self.statusBar().setVisible(not on)
+        self.btn_fullscreen.setText("Exit full screen" if on else "Full screen")
+        if self.act_fullscreen.isChecked() != on:
+            self.act_fullscreen.setChecked(on)
+        if on:
+            self.tabs.setCurrentIndex(2)
+            self.term.setFocus()
+
+    def _exit_fullscreen(self):
+        if getattr(self, "_fullscreen", False):
+            self.btn_fullscreen.setChecked(False)
 
     def _set_term_state(self, state: str, detail: str = ""):
         self.term_pill.set_state(state, detail)
@@ -678,34 +686,23 @@ class MainWindow(QMainWindow):
 
     # ---- USB connection management ----
     def refresh(self):
-        # Rescanning clears the list, so remember what the user had selected.
-        keep = self.cmb.currentData() or settings.get(settings.KEY_DEVICE, "")
-        self.cmb.clear()
-        try:
-            for d in self.adb.devices():
-                if d["state"] == "device":
-                    self.cmb.addItem(d["desc"], d["serial"])
-        except Exception as e:
-            self._on_status(f"[adb unavailable] {e}")
-        if keep:
-            index = self.cmb.findData(keep)
-            if index >= 0:
-                self.cmb.setCurrentIndex(index)
+        self._refresh_device_list()
+        self._on_device_changed()
 
     def connect_phone(self):
-        serial = self.cmb.currentData()
+        serial = self.dlg.selected_serial()
         if not serial:
+            self.open_connection_dialog()
             return QMessageBox.warning(
                 self, "Notice",
                 "Please refresh and select a device first (USB debugging must be enabled and authorized)")
         try:
-            name = self.ed_pc_name.text().strip()
+            name = self.dlg.pc_name()
             if name:
                 self.client.identity.set_name(name)
-                self._refresh_fingerprint()
             self.adb.forward(serial, PC_PORT, PHONE_PORT)
             self._set_conn_state("connecting", "approve on phone")
-            self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text())
+            self.client.connect("127.0.0.1", PC_PORT, self.dlg.token())
         except Exception as e:
             self._set_conn_state("error", "connect failed")
             QMessageBox.critical(self, "Connection failed", str(e))
@@ -719,7 +716,7 @@ class MainWindow(QMainWindow):
         self._reset_attach()
         self.client.close()
         self._set_conn_state("disconnected")
-        serial = self.cmb.currentData()
+        serial = self.dlg.selected_serial()
         if serial:
             try:
                 self.adb.remove_forward(serial, PC_PORT)

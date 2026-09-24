@@ -21,6 +21,7 @@ class TerminalWidget(QPlainTextEdit):
     """Renders remote output via pyte and emits raw key bytes for REMOTE_DATA."""
     bytes_out = pyqtSignal(object)   # bytes
     zoom_changed = pyqtSignal(int)   # font point size
+    escape_out = pyqtSignal()        # Escape while detached (used to leave full screen)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -173,6 +174,12 @@ class TerminalWidget(QPlainTextEdit):
             return
 
         if not self._attached:
+            # Escape is only free when nothing is attached; otherwise it is a
+            # real key the remote expects.
+            if key == Qt.Key_Escape:
+                self.escape_out.emit()
+                event.accept()
+                return
             return super().keyPressEvent(event)
 
         # Ctrl+Shift+C / Ctrl+Insert → copy
