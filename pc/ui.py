@@ -4,12 +4,14 @@ Run: py ui.py
 """
 import sys
 
-from PyQt5.QtCore import pyqtSignal, Qt
+from PyQt5.QtCore import QTimer, pyqtSignal, Qt
+from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QComboBox, QPushButton, QLabel, QTabWidget, QPlainTextEdit,
-    QLineEdit, QProgressBar, QFileDialog, QMessageBox, QTableWidget,
-    QTableWidgetItem, QHeaderView)
+    QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut, QTabWidget,
+    QPlainTextEdit, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
+    QTableWidget, QTableWidgetItem, QHeaderView)
 
+import theme
 from adb_manager import Adb
 from client import PhoneClient
 from terminal import TerminalWidget
@@ -36,6 +38,7 @@ class MainWindow(QMainWindow):
         self.adb, self.client, self.ch = Adb(), PhoneClient(), None
         self._conn_items = []   # list of connection dicts from phone
         self._rows = {}
+        self._conn_state = "disconnected"
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -57,37 +60,128 @@ class MainWindow(QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
-        top = QHBoxLayout()
-        self.cmb = QComboBox()
-        self.ed_token = QLineEdit()
-        self.ed_token.setPlaceholderText("Phone token")
-        self.ed_token.setEchoMode(QLineEdit.Password)
-        self.ed_token.setFixedWidth(130)
-        self.ed_pc_name = QLineEdit()
-        self.ed_pc_name.setPlaceholderText("PC display name")
-        self.ed_pc_name.setText(self.client.identity.pc_name)
-        self.ed_pc_name.setFixedWidth(140)
-        b1 = QPushButton("Refresh Devices"); b1.clicked.connect(self.refresh)
-        b2 = QPushButton("Connect"); b2.clicked.connect(self.connect_phone)
-        b3 = QPushButton("Disconnect"); b3.clicked.connect(self.disconnect_phone)
-        self.lbl = QLabel("Not connected")
-        top.addWidget(QLabel("Device:")); top.addWidget(self.cmb, 1)
-        top.addWidget(QLabel("Token:")); top.addWidget(self.ed_token)
-        top.addWidget(QLabel("PC name:")); top.addWidget(self.ed_pc_name)
-        top.addWidget(b1); top.addWidget(b2); top.addWidget(b3); top.addWidget(self.lbl)
-
         self.tabs = QTabWidget()
         self.tabs.addTab(self._msg_tab(), "Messages")
         self.tabs.addTab(self._file_tab(), "Files")
         self.tabs.addTab(self._term_tab(), "Remote Terminal")
-        root = QWidget(); lay = QVBoxLayout(root)
-        lay.addLayout(top)
-        lay.addWidget(QLabel(
-            f"PC fingerprint: {self.client.identity.short_id}… "
-            "(private key never shown; approve this PC on the phone when prompted)"))
+        root = QWidget(); root.setObjectName("root")
+        lay = QVBoxLayout(root)
+        lay.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
+        lay.setSpacing(theme.SPACE_M)
+        lay.addWidget(self._build_header())
         lay.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
+        QShortcut(QKeySequence("F5"), self, activated=self.refresh)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self.connect_phone)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send_text)
         self.refresh()
+
+    def _build_header(self):
+        """Two grouped rows: connection fields, then actions + identity + status."""
+        card = QWidget(); card.setObjectName("header")
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(theme.SPACE_L, theme.SPACE_M, theme.SPACE_L, theme.SPACE_M)
+        outer.setSpacing(theme.SPACE_M)
+
+        # Row 1 - device / token / PC name, separated into logical groups.
+        fields = QHBoxLayout()
+        fields.setSpacing(theme.SPACE_S)
+        self.cmb = QComboBox()
+        self.cmb.setToolTip("USB device reported by adb")
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Re-scan adb for connected devices (F5)")
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.ed_token = QLineEdit()
+        self.ed_token.setPlaceholderText("Token from phone")
+        self.ed_token.setEchoMode(QLineEdit.Password)
+        self.ed_token.setFixedWidth(130)
+        self.ed_token.setToolTip("8 hex digits shown on the phone")
+        self.btn_reveal = QPushButton("Show")
+        self.btn_reveal.setCheckable(True)
+        self.btn_reveal.setFixedWidth(58)
+        self.btn_reveal.setToolTip("Reveal the token")
+        self.btn_reveal.toggled.connect(self._toggle_token_visibility)
+        self.ed_pc_name = QLineEdit()
+        self.ed_pc_name.setPlaceholderText("PC display name")
+        self.ed_pc_name.setText(self.client.identity.pc_name)
+        self.ed_pc_name.setFixedWidth(150)
+        self.ed_pc_name.setToolTip("Name shown in the phone's Approve PC dialog")
+        fields.addWidget(theme.field_label("Device"))
+        fields.addWidget(self.cmb, 1)
+        fields.addWidget(self.btn_refresh)
+        fields.addWidget(theme.vertical_separator())
+        fields.addWidget(theme.field_label("Token"))
+        fields.addWidget(self.ed_token)
+        fields.addWidget(self.btn_reveal)
+        fields.addWidget(theme.vertical_separator())
+        fields.addWidget(theme.field_label("PC name"))
+        fields.addWidget(self.ed_pc_name)
+        outer.addLayout(fields)
+
+        # Row 2 - primary action, then identity, then the status chip pinned right.
+        actions = QHBoxLayout()
+        actions.setSpacing(theme.SPACE_S)
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.setProperty("variant", "primary")
+        self.btn_connect.setToolTip("Forward the USB port and handshake with the phone (Ctrl+K)")
+        self.btn_connect.clicked.connect(self.connect_phone)
+        self.btn_disconnect = QPushButton("Disconnect")
+        self.btn_disconnect.clicked.connect(self.disconnect_phone)
+        actions.addWidget(self.btn_connect)
+        actions.addWidget(self.btn_disconnect)
+        actions.addWidget(theme.vertical_separator())
+
+        self.lbl_fp = theme.caption("")
+        self.lbl_fp.setProperty("role", "mono")
+        self.btn_fp_copy = QPushButton("Copy")
+        self.btn_fp_copy.setProperty("variant", "subtle")
+        self.btn_fp_copy.setToolTip("Copy the full PC fingerprint")
+        self.btn_fp_copy.clicked.connect(self._copy_fingerprint)
+        identity = QWidget()
+        identity.setToolTip(
+            "The private key is never shown or sent. The phone asks you to approve\n"
+            "this PC the first time it connects; later connections use this fingerprint.")
+        id_lay = QHBoxLayout(identity)
+        id_lay.setContentsMargins(0, 0, 0, 0)
+        id_lay.setSpacing(theme.SPACE_S)
+        id_lay.addWidget(theme.caption("Fingerprint"))
+        id_lay.addWidget(self.lbl_fp)
+        id_lay.addWidget(self.btn_fp_copy)
+        id_lay.addStretch(1)
+        self._refresh_fingerprint()
+        actions.addWidget(identity, 1)
+
+        self.chip = theme.StatusChip()
+        actions.addWidget(self.chip, 0, Qt.AlignRight)
+        outer.addLayout(actions)
+
+        self._set_conn_state("disconnected")
+        return card
+
+    def _toggle_token_visibility(self, shown: bool):
+        self.ed_token.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
+        self.btn_reveal.setText("Hide" if shown else "Show")
+
+    def _refresh_fingerprint(self):
+        ident = self.client.identity
+        self.lbl_fp.setText(f"{ident.short_id}…")
+        self.lbl_fp.setToolTip(ident.pc_id)
+
+    def _copy_fingerprint(self):
+        QApplication.clipboard().setText(self.client.identity.pc_id)
+        self._flash(self.btn_fp_copy, "Copy", "Copied")
+
+    def _flash(self, button, restore: str, temporary: str):
+        button.setText(temporary)
+        QTimer.singleShot(1200, lambda: button.setText(restore))
+
+    def _set_conn_state(self, state: str, detail: str = ""):
+        """Single source of truth for the chip and for which actions are available."""
+        self._conn_state = state
+        self.chip.set_state(state, detail)
+        self.btn_connect.setEnabled(state in ("disconnected", "error"))
+        # Disconnect doubles as "cancel" while a handshake is still in flight.
+        self.btn_disconnect.setEnabled(state in ("connecting", "connected"))
 
     # ---- Tab1 Messages ----
     def _msg_tab(self):
@@ -121,15 +215,27 @@ class MainWindow(QMainWindow):
     def _on_status(self, s):
         self.msg_view.appendPlainText(s)
         low = s.lower()
-        if ("[connection closed]" in low or "bad_token" in low
-                or "pc_rejected" in low or "pc_already_connected" in low
-                or "pc_key_changed" in low):
-            self.lbl.setText("Not connected")
+        if "[connection closed]" in low:
+            self._set_conn_state("disconnected")
             self._reset_attach()
+        elif "bad_token" in low:
+            self._set_conn_state("error", "wrong token")
+            self._reset_attach()
+        elif "pc_rejected" in low:
+            self._set_conn_state("error", "rejected on phone")
+            self._reset_attach()
+        elif "pc_already_connected" in low:
+            self._set_conn_state("error", "already connected")
+            self._reset_attach()
+        elif "pc_key_changed" in low:
+            self._set_conn_state("error", "PC key changed")
+            self._reset_attach()
+        elif "adb unavailable" in low:
+            self._set_conn_state("error", "adb unavailable")
 
     def _hello_ack(self, info):
         serial = self.cmb.currentData() or "?"
-        self.lbl.setText("Connected " + str(serial) + " (encrypted)")
+        self._set_conn_state("connected", f"{serial} · encrypted")
         self.msg_view.appendPlainText(
             f"[Phone connected: {info.get('device', '?')}] link sealed")
         self.client.list_connections()
@@ -297,11 +403,12 @@ class MainWindow(QMainWindow):
             name = self.ed_pc_name.text().strip()
             if name:
                 self.client.identity.set_name(name)
+                self._refresh_fingerprint()
             self.adb.forward(serial, PC_PORT, PHONE_PORT)
-            self.lbl.setText("Connecting… approve on phone if prompted")
+            self._set_conn_state("connecting", "approve on phone")
             self.client.connect("127.0.0.1", PC_PORT, self.ed_token.text())
         except Exception as e:
-            self.lbl.setText("Not connected")
+            self._set_conn_state("error", "connect failed")
             QMessageBox.critical(self, "Connection failed", str(e))
 
     def disconnect_phone(self):
@@ -312,7 +419,7 @@ class MainWindow(QMainWindow):
                 pass
         self._reset_attach()
         self.client.close()
-        self.lbl.setText("Not connected")
+        self._set_conn_state("disconnected")
         serial = self.cmb.currentData()
         if serial:
             try:
@@ -322,5 +429,8 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
+    app.setStyleSheet(theme.stylesheet())
     w = MainWindow(); w.show(); sys.exit(app.exec_())
