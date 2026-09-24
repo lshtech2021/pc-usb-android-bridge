@@ -8,10 +8,11 @@ from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut, QTabWidget,
-    QPlainTextEdit, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
-    QTableWidget, QTableWidgetItem, QHeaderView)
+    QLineEdit, QProgressBar, QFileDialog, QMessageBox,
+    QTableWidgetItem)
 
 import theme
+import widgets
 from adb_manager import Adb
 from client import PhoneClient
 from terminal import TerminalWidget
@@ -186,34 +187,47 @@ class MainWindow(QMainWindow):
     # ---- Tab1 Messages ----
     def _msg_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
-        self.msg_view = QPlainTextEdit()
-        self.msg_view.setReadOnly(True)
-        self.msg_view.setTextInteractionFlags(
-            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        v.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
+        v.setSpacing(theme.SPACE_S)
+        self.msg_log = widgets.MessageLog()
         h = QHBoxLayout()
-        self.msg_input = QLineEdit(); self.msg_input.returnPressed.connect(self.send_text)
-        b = QPushButton("Send"); b.clicked.connect(self.send_text)
-        b_copy = QPushButton("Copy all")
-        b_copy.clicked.connect(
-            lambda: QApplication.clipboard().setText(self.msg_view.toPlainText()))
-        h.addWidget(self.msg_input, 1); h.addWidget(b); h.addWidget(b_copy)
-        v.addWidget(QLabel("Messages (select text to copy, or Copy all)"))
-        v.addWidget(self.msg_view, 1); v.addLayout(h)
+        h.setSpacing(theme.SPACE_S)
+        self.msg_input = QLineEdit()
+        self.msg_input.setPlaceholderText("Type a message and press Enter")
+        self.msg_input.returnPressed.connect(self.send_text)
+        self.btn_send = QPushButton("Send")
+        self.btn_send.setProperty("variant", "primary")
+        self.btn_send.setToolTip("Send to the phone (Ctrl+Enter)")
+        self.btn_send.clicked.connect(self.send_text)
+        self.btn_copy_all = QPushButton("Copy all")
+        self.btn_copy_all.setProperty("variant", "subtle")
+        self.btn_copy_all.setToolTip("Copy the whole conversation to the clipboard")
+        self.btn_copy_all.clicked.connect(self._copy_transcript)
+        h.addWidget(self.msg_input, 1)
+        h.addWidget(self.btn_send)
+        h.addWidget(self.btn_copy_all)
+        v.addWidget(self.msg_log, 1)
+        v.addLayout(h)
         return w
+
+    def _copy_transcript(self):
+        QApplication.clipboard().setText(self.msg_log.transcript())
+        self._flash(self.btn_copy_all, "Copy all", "Copied")
 
     def send_text(self):
         t = self.msg_input.text().strip()
         if t and self.client.tp and self.client.tp.alive:
             self.client.send_text(t)
-            self.msg_view.appendPlainText(f"[PC] {t}")
+            self.msg_log.add_message(t, from_me=True)
             self.msg_input.clear()
 
     def _on_text(self, t):
-        self.msg_view.appendPlainText(f"[Phone] {t}")
+        self.msg_log.add_message(t, from_me=False)
         self.tabs.setCurrentIndex(0)
 
     def _on_status(self, s):
-        self.msg_view.appendPlainText(s)
+        # Connection-level notices belong in the log, not as a fake chat bubble.
+        self.msg_log.add_notice(s)
         low = s.lower()
         if "[connection closed]" in low:
             self._set_conn_state("disconnected")
@@ -236,53 +250,126 @@ class MainWindow(QMainWindow):
     def _hello_ack(self, info):
         serial = self.cmb.currentData() or "?"
         self._set_conn_state("connected", f"{serial} · encrypted")
-        self.msg_view.appendPlainText(
-            f"[Phone connected: {info.get('device', '?')}] link sealed")
+        self.msg_log.add_notice(
+            f"Phone connected: {info.get('device', '?')} · link sealed")
         self.client.list_connections()
 
     # ---- Tab2 Files ----
     def _file_tab(self):
         w = QWidget(); v = QVBoxLayout(w)
-        b = QPushButton("Choose a file to send to phone…"); b.clicked.connect(self.pick_send)
-        self.ftab = QTableWidget(0, 4)
-        self.ftab.setHorizontalHeaderLabels(["File", "Direction", "Progress", "Status"])
-        self.ftab.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.ftab.verticalHeader().setVisible(False)
-        v.addWidget(b); v.addWidget(self.ftab, 1)
-        v.addWidget(QLabel("Files sent from the phone are saved in ./downloads/"))
+        v.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
+        v.setSpacing(theme.SPACE_S)
+        bar = QHBoxLayout()
+        bar.setSpacing(theme.SPACE_S)
+        self.btn_add_files = QPushButton("Add files…")
+        self.btn_add_files.setProperty("variant", "primary")
+        self.btn_add_files.setToolTip("Choose files to send to the phone")
+        self.btn_add_files.clicked.connect(self.pick_send)
+        bar.addWidget(self.btn_add_files)
+        bar.addWidget(theme.caption("or drag files onto the list"))
+        bar.addStretch(1)
+        v.addLayout(bar)
+
+        self.ftab = widgets.FileDropTable()
+        self.ftab.files_dropped.connect(self.send_files)
+        v.addWidget(self.ftab, 1)
+
+        foot = QHBoxLayout()
+        foot.setSpacing(theme.SPACE_S)
+        folder = QLabel(self.client.save_dir)
+        folder.setProperty("role", "mono")
+        folder.setToolTip(self.client.save_dir)
+        self.btn_open_folder = QPushButton("Open folder")
+        self.btn_open_folder.setProperty("variant", "subtle")
+        self.btn_open_folder.setToolTip("Open the folder that receives files from the phone")
+        self.btn_open_folder.clicked.connect(
+            lambda: widgets.open_in_file_manager(self.client.save_dir))
+        foot.addWidget(theme.caption("Received files:"))
+        foot.addWidget(folder, 1)
+        foot.addWidget(self.btn_open_folder)
+        v.addLayout(foot)
         return w
 
     def pick_send(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Choose files to send")
+        if paths:
+            self.send_files(paths)
+
+    def send_files(self, paths):
         if not (self.client.tp and self.client.tp.alive):
             return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
-        path, _ = QFileDialog.getOpenFileName(self, "Choose File")
-        if path:
-            self.client.send_file(path)
+        if len(paths) > 20:
+            n = len(paths)
+            if QMessageBox.question(
+                    self, "Send files",
+                    f"Send {n} files to the phone?") != QMessageBox.Yes:
+                return
+        for p in paths:
+            self.client.send_file(p)
 
     def _row_for(self, fid, name, direction):
-        if fid in self._rows:
-            return self._rows[fid]
-        r = self.ftab.rowCount(); self.ftab.insertRow(r)
+        st = self._rows.get(fid)
+        if st:
+            return st
+        r = self.ftab.rowCount()
+        self.ftab.insertRow(r)
         self.ftab.setItem(r, 0, QTableWidgetItem(name))
-        self.ftab.setItem(r, 1, QTableWidgetItem("Send -> Phone" if direction == "up" else "Phone -> PC"))
-        bar = QProgressBar(); bar.setValue(0)
-        self.ftab.setCellWidget(r, 2, bar)
-        self.ftab.setItem(r, 3, QTableWidgetItem("Transferring"))
-        self._rows[fid] = r
-        return r
+        self.ftab.setItem(r, 1, QTableWidgetItem("Send → Phone" if direction == "up" else "Phone → PC"))
+        bar = QProgressBar(); bar.setValue(0); bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        # A cell widget fills its cell, so centre the thin bar inside a column.
+        bar_holder = QWidget()
+        bar_lay = QVBoxLayout(bar_holder)
+        bar_lay.setContentsMargins(0, 0, 0, 0)
+        bar_lay.addStretch(1); bar_lay.addWidget(bar); bar_lay.addStretch(1)
+        self.ftab.setCellWidget(r, 2, bar_holder)
+        status = QTableWidgetItem("Transferring")
+        self.ftab.setItem(r, 3, status)
+        action = QPushButton("Cancel")
+        action.setProperty("variant", "subtle")
+        action.clicked.connect(lambda _=False, f=fid: self._row_action(f))
+        self.ftab.setCellWidget(r, 4, action)
+        self.ftab.setRowHeight(r, 34)
+        st = {"row": r, "bar": bar, "status": status, "action": action,
+              "name": name, "direction": direction, "state": "transferring", "path": ""}
+        self._rows[fid] = st
+        self.ftab.refresh_empty_state()
+        return st
+
+    def _row_action(self, fid):
+        st = self._rows.get(fid)
+        if not st:
+            return
+        if st["state"] == "transferring":
+            self.client.cancel_upload(fid)
+        elif st["state"] == "done" and st["direction"] == "down" and st["path"]:
+            widgets.open_in_file_manager(st["path"])
 
     def _on_fprog(self, fid, name, sent, total, d):
-        r = self._row_for(fid, name, d)
-        bar = self.ftab.cellWidget(r, 2)
-        bar and bar.setValue(int(sent * 100 / max(total, 1)))
-        self.ftab.scrollToItem(self.ftab.item(r, 0))
+        st = self._row_for(fid, name, d)
+        st["bar"].setValue(int(sent * 100 / max(total, 1)))
+        self.ftab.scrollToItem(self.ftab.item(st["row"], 0))
 
     def _on_fdone(self, fid, name, ok, d, path):
-        r = self._row_for(fid, name, d)
-        bar = self.ftab.cellWidget(r, 2)
-        bar and bar.setValue(100 if ok else bar.value())
-        tip = ("Done" if ok else "Failed") + (f" -> {path}" if path else "")
-        self.ftab.setItem(r, 3, QTableWidgetItem(("✓ " if ok else "✗ ") + tip))
+        st = self._row_for(fid, name, d)
+        st["bar"].setValue(100 if ok else st["bar"].value())
+        st["state"] = "done" if ok else "failed"
+        st["path"] = path
+        if ok:
+            text = f"Done → {path}" if path else "Done"
+        else:
+            text = f"Failed — {path}" if path else "Failed"
+        st["status"].setText(("✓ " if ok else "✗ ") + text)
+        st["status"].setToolTip(text)
+        # Reveal only makes sense for a file that actually landed on this PC.
+        # A cell widget cannot be hidden reliably (the view re-shows it), so the
+        # unused state is a disabled placeholder instead.
+        if st["state"] == "done" and d == "down" and path:
+            st["action"].setText("Reveal")
+            st["action"].setEnabled(True)
+        else:
+            st["action"].setText("—")
+            st["action"].setEnabled(False)
 
     # ---- Tab3 Remote terminal (attach by phone connection ID) ----
     def _term_tab(self):
@@ -381,7 +468,7 @@ class MainWindow(QMainWindow):
             self.term.set_attached(False)
             if ch == self.ch:
                 self.ch = None
-        self.msg_view.appendPlainText(f"[Remote error] {code} {msg}")
+        self.msg_log.add_notice(f"Remote error {code}: {msg}")
 
     # ---- USB connection management ----
     def refresh(self):

@@ -27,6 +27,7 @@ class PhoneClient:
         self._hb_gen = 0                       # invalidate old heartbeat threads
         self._last_pong = 0.0
         self._pending_up = {}                  # fid -> {"name": str}
+        self._cancel_up = set()                # fids the user asked to abort
         # ---- Event callbacks (fired on the network thread; the UI layer switches back to the main thread) ----
         self.on_text = None            # fn(text)
         self.on_hello_ack = None       # fn(info)
@@ -116,15 +117,22 @@ class PhoneClient:
         for fid, st in list(self._pending_up.items()):
             self.on_file_done and self.on_file_done(fid, st["name"], False, "up", "disconnected")
         self._pending_up.clear()
+        self._cancel_up.clear()
 
     def _on_disconnect(self):
         self._cleanup_partial()
         self.on_status and self.on_status("[Connection closed]")
 
     def _fail_upload(self, fid, message=""):
+        self._cancel_up.discard(fid)
         st = self._pending_up.pop(fid, None)
         if st:
             self.on_file_done and self.on_file_done(fid, st["name"], False, "up", message)
+
+    def cancel_upload(self, fid: int):
+        """Abort an in-flight upload; the chunk loop stops and tells the phone to delete its partial."""
+        if fid in self._pending_up:
+            self._cancel_up.add(fid)
 
     # ---------- Feature 2: text messages (bidirectional) ----------
     def send_text(self, text: str):
@@ -147,6 +155,11 @@ class PhoneClient:
                 self.tp.send(MsgType.FILE_META, {"id": fid, "name": name, "size": size})
                 with open(path, "rb") as f:
                     while chunk := f.read(CHUNK_SIZE):
+                        if fid in self._cancel_up:
+                            # ok:false makes the phone finish() and delete its partial file.
+                            self.tp.send(MsgType.FILE_END, {"id": fid, "ok": False})
+                            self._fail_upload(fid, "cancelled")
+                            return
                         sha.update(chunk)
                         self.tp.send(MsgType.FILE_CHUNK, {"id": fid}, chunk)
                         sent += len(chunk)

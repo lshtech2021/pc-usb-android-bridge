@@ -33,6 +33,12 @@ DOT_ERROR = "#DC2626"
 
 MONO_STACK = "'Consolas', 'Menlo', 'DejaVu Sans Mono', monospace"
 
+# Fraction of the viewport a chat bubble may occupy.
+BUBBLE_MAX_FRACTION = 0.72
+
+BUBBLE_MINE_BG = "#E5EDFD"
+BUBBLE_MINE_BORDER = "#CFDDF8"
+
 
 def stylesheet() -> str:
     """Application-wide style sheet."""
@@ -157,6 +163,30 @@ QPlainTextEdit {{
     selection-background-color: {ACCENT};
     selection-color: #FFFFFF;
 }}
+
+/* Message log and chat bubbles */
+QScrollArea#messageLog {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
+QScrollArea#messageLog > QWidget > QWidget {{ background: transparent; }}
+#messageBody {{ background: transparent; }}
+
+#bubbleMine {{
+    background: {BUBBLE_MINE_BG};
+    border: 1px solid {BUBBLE_MINE_BORDER};
+    border-radius: 10px;
+}}
+#bubbleTheirs {{
+    background: {SURFACE};
+    border: 1px solid {BORDER};
+    border-radius: 10px;
+}}
+#bubbleText {{ color: {TEXT}; }}
+#bubbleTime {{ color: {TEXT_FAINT}; font-size: 11px; }}
+
+QLabel[role="emptyState"], #fileEmpty {{ color: {TEXT_FAINT}; }}
 
 /* Status chip */
 #statusChip {{
