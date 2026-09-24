@@ -3,12 +3,25 @@ import shutil
 import subprocess
 
 
+class AdbNotFound(RuntimeError):
+    """adb is not runnable, with a message that does not depend on the OS locale."""
+
+
 class Adb:
     def __init__(self, path="adb"):
         self.path = shutil.which(path) or path
 
     def _run(self, *args, check=True):
-        return subprocess.run([self.path, *args], capture_output=True, text=True, check=check)
+        try:
+            return subprocess.run(
+                [self.path, *args], capture_output=True, text=True, check=check)
+        except FileNotFoundError:
+            # subprocess raises a locale-specific OSError; the UI wants English.
+            raise AdbNotFound(
+                f"adb not found ({self.path!r}). Install Android platform-tools "
+                f"and put adb on PATH, or pass an explicit path: Adb(path=...)")
+        except OSError as e:
+            raise AdbNotFound(f"adb could not be started: {e}")
 
     def devices(self):
         out = []

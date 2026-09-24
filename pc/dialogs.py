@@ -75,8 +75,9 @@ class ConnectionDialog(QDialog):
         self.btn_copy_fp.clicked.connect(self._copy_fingerprint)
         fp_row = QHBoxLayout()
         fp_row.setSpacing(theme.SPACE_S)
-        fp_row.addWidget(self.lbl_fp, 1)
+        fp_row.addWidget(self.lbl_fp)
         fp_row.addWidget(self.btn_copy_fp)
+        fp_row.addStretch(1)
 
         self.lbl_fp_note = theme.caption(
             "Private key is never shown. The phone asks you to approve this PC "

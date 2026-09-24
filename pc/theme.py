@@ -177,17 +177,18 @@ QTabBar::tab {
     border: 1px solid transparent;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
-    padding: 7px 16px;
+    padding: 7px 18px;
     margin-right: 4px;
     color: $text_muted;
 }
 QTabBar::tab:hover:!selected { color: $text; }
+/* No font-weight change here: QTabBar sizes tabs from the base font and does
+   not re-measure for a bolder selected tab, which clips the label. */
 QTabBar::tab:selected {
     background: $surface;
     border-color: $border;
     border-bottom-color: $surface;
     color: $text;
-    font-weight: 600;
 }
 
 /* Tables */

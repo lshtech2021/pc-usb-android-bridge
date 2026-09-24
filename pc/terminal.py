@@ -5,7 +5,7 @@ copies; otherwise sends interrupt (0x03) to the remote. Ctrl+wheel / Ctrl+plus /
 Ctrl+minus zoom the font.
 """
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QKeyEvent, QTextCursor, QKeySequence
+from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette, QTextCursor, QKeySequence
 from PyQt5.QtWidgets import QApplication, QPlainTextEdit, QAction, QMenu
 
 import pyte
@@ -41,10 +41,22 @@ class TerminalWidget(QPlainTextEdit):
 
     # ---- Appearance ----
     def apply_theme(self):
-        """A terminal stays dark in both palettes, but the exact tones are tokens."""
+        """A terminal stays dark in both palettes, but the exact tones are tokens.
+
+        The visible area is the scroll area's *viewport*, which does not pick up
+        a QPlainTextEdit background from the style sheet, so the palette is set
+        on both and the viewport is told to fill itself.
+        """
+        bg, fg = theme.color("term_bg"), theme.color("term_fg")
         self.setStyleSheet(
-            "QPlainTextEdit { background: %s; color: %s; }"
-            % (theme.color("term_bg"), theme.color("term_fg")))
+            "QPlainTextEdit { background-color: %s; color: %s; border: 1px solid %s; }"
+            % (bg, fg, theme.color("border")))
+        palette = self.palette()
+        palette.setColor(QPalette.Base, QColor(bg))
+        palette.setColor(QPalette.Text, QColor(fg))
+        self.setPalette(palette)
+        self.viewport().setPalette(palette)
+        self.viewport().setAutoFillBackground(True)
 
     def _apply_font(self):
         font = QFont("Consolas", self._font_size)

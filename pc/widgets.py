@@ -7,7 +7,8 @@ import subprocess
 import sys
 import time
 
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QRect, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QFontMetrics
 from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel,
                              QScrollArea, QTableWidget, QVBoxLayout, QWidget)
 
@@ -42,7 +43,7 @@ class MessageLog(QScrollArea):
         self.setWidget(self._body)
 
         self._items = []        # (text, from_me, at) for the transcript
-        self._bodies = []       # QLabels whose max width tracks the viewport
+        self._bodies = []       # (QLabel, text) pairs, re-measured on resize
 
     # ---- Content ----
     def add_message(self, text: str, from_me: bool, at: float | None = None):
@@ -59,8 +60,7 @@ class MessageLog(QScrollArea):
         body.setObjectName("bubbleText")
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        body.setMaximumWidth(self._max_bubble_width())
-        self._bodies.append(body)
+        self._bodies.append((body, text))
 
         stamp = QLabel(time.strftime("%H:%M", time.localtime(at)))
         stamp.setObjectName("bubbleTime")
@@ -80,6 +80,7 @@ class MessageLog(QScrollArea):
             h.addWidget(bubble)
             h.addStretch(1)
 
+        self._size_bubble(body, text)
         stick = self._at_bottom()
         self._lay.insertWidget(self._lay.count() - 1, row)
         self._items.append((text, from_me, at))
@@ -118,6 +119,17 @@ class MessageLog(QScrollArea):
     def _max_bubble_width(self) -> int:
         return max(220, int(self.viewport().width() * BUBBLE_MAX_FRACTION))
 
+    def _size_bubble(self, body: QLabel, text: str):
+        """Pin the label to its natural width, capped at the bubble limit.
+
+        A word-wrapped QLabel asked for its size hint inside a layout settles on
+        a narrow width, which made every bubble wrap far too early.
+        """
+        metrics = QFontMetrics(body.font())
+        natural = metrics.boundingRect(
+            QRect(0, 0, 100000, 100000), Qt.TextWordWrap, text).width()
+        body.setFixedWidth(min(natural, self._max_bubble_width()) + 2)
+
     def _at_bottom(self) -> bool:
         sb = self.verticalScrollBar()
         return sb.value() >= sb.maximum() - 8
@@ -128,9 +140,8 @@ class MessageLog(QScrollArea):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        width = self._max_bubble_width()
-        for body in self._bodies:
-            body.setMaximumWidth(width)
+        for body, text in self._bodies:
+            self._size_bubble(body, text)
 
 
 class FileDropTable(QTableWidget):
@@ -150,6 +161,8 @@ class FileDropTable(QTableWidget):
         self.setShowGrid(False)
         self.setSelectionBehavior(QTableWidget.SelectRows)
         self.setEditTriggers(QTableWidget.NoEditTriggers)
+        # Elide long paths rather than wrapping: wrapping makes rows uneven.
+        self.setWordWrap(False)
         self.verticalHeader().setVisible(False)
         self.setHorizontalHeaderLabels(self.COLUMNS)
 
