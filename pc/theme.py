@@ -45,8 +45,6 @@ PALETTES = {
         "dot_connecting": "#D97706",
         "dot_connected": "#16A34A",
         "dot_error": "#DC2626",
-        "term_bg": "#1E1E1E",
-        "term_fg": "#D4D4D4",
     },
     "dark": {
         "canvas": "#17191D",
@@ -71,8 +69,24 @@ PALETTES = {
         "dot_connecting": "#E0A33A",
         "dot_connected": "#34C759",
         "dot_error": "#F0524B",
-        "term_bg": "#0E1013",
-        "term_fg": "#D4D4D4",
+    },
+}
+
+# ---- Terminal colour schemes ----
+# Chosen separately from the app palette so the SSH terminal stays readable
+# whichever way the surrounding UI is themed. "light" is the default.
+TERMINAL_THEMES = {
+    "light": {
+        "bg": "#FFFFFF",
+        "fg": "#1F2430",
+        "selection": "#CFE0FF",
+        "selection_fg": "#1F2430",
+    },
+    "dark": {
+        "bg": "#1E1E1E",
+        "fg": "#D4D4D4",
+        "selection": "#264F78",
+        "selection_fg": "#FFFFFF",
     },
 }
 
@@ -95,6 +109,23 @@ def palette() -> dict:
 
 def color(key: str) -> str:
     return palette()[key]
+
+
+_active_terminal = "light"
+
+
+def set_terminal_theme(name: str):
+    global _active_terminal
+    if name in TERMINAL_THEMES:
+        _active_terminal = name
+
+
+def terminal_theme_name() -> str:
+    return _active_terminal
+
+
+def terminal_color(key: str) -> str:
+    return TERMINAL_THEMES[_active_terminal][key]
 
 
 _QSS = Template("""

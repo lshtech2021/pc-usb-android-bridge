@@ -9,6 +9,7 @@ KEY_TAB = "window/tab"
 KEY_DEVICE = "connection/device"
 KEY_PALETTE = "appearance/palette"
 KEY_FONT_SIZE = "terminal/font_size"
+KEY_TERMINAL_THEME = "terminal/theme"
 
 
 def store() -> QSettings:

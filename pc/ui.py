@@ -6,8 +6,8 @@ import sys
 
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
-from PyQt5.QtWidgets import (QAction, QApplication, QMainWindow, QWidget,
-    QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
+from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QMainWindow,
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
     QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
     QTableWidgetItem)
 
@@ -183,6 +183,19 @@ class MainWindow(QMainWindow):
         self.act_dark = self._menu_action(
             m_view, "&Dark mode", self._set_dark, checkable=True)
         m_view.addSeparator()
+        m_term = m_view.addMenu("Terminal &colors")
+        self._term_actions = {}
+        self._term_group = QActionGroup(self)
+        for name, label in (("light", "&Light"), ("dark", "&Dark")):
+            act = QAction(label, self)
+            act.setCheckable(True)
+            act.setChecked(theme.terminal_theme_name() == name)
+            act.triggered.connect(
+                lambda _=False, n=name: self._set_terminal_theme(n))
+            self._term_group.addAction(act)
+            m_term.addAction(act)
+            self._term_actions[name] = act
+        m_view.addSeparator()
         self._menu_action(m_view, "&Bigger terminal text",
                           lambda: self.term.zoom(1), "Ctrl+=")
         self._menu_action(m_view, "&Smaller terminal text",
@@ -198,6 +211,11 @@ class MainWindow(QMainWindow):
         theme.set_palette("dark" if on else "light")
         settings.put(settings.KEY_PALETTE, theme.palette_name())
         self._apply_theme()
+
+    def _set_terminal_theme(self, name: str):
+        theme.set_terminal_theme(name)
+        settings.put(settings.KEY_TERMINAL_THEME, theme.terminal_theme_name())
+        self.term.apply_theme()
 
     def _apply_theme(self):
         """Re-style everything that does not come from the app style sheet."""
@@ -216,6 +234,9 @@ class MainWindow(QMainWindow):
                     state, "dot_disconnected")))
         if self.act_dark.isChecked() != (theme.palette_name() == "dark"):
             self.act_dark.setChecked(theme.palette_name() == "dark")
+        for name, act in self._term_actions.items():
+            if act.isChecked() != (theme.terminal_theme_name() == name):
+                act.setChecked(theme.terminal_theme_name() == name)
 
     def _status(self, text: str, timeout: int = 0):
         self.statusBar().showMessage(text, timeout)
@@ -247,6 +268,8 @@ class MainWindow(QMainWindow):
     def _restore_window_state(self):
         theme.set_palette(settings.get(settings.KEY_PALETTE, "light"))
         self.act_dark.setChecked(theme.palette_name() == "dark")
+        theme.set_terminal_theme(
+            settings.get(settings.KEY_TERMINAL_THEME, "light"))
         self._apply_theme()
         geometry = settings.get(settings.KEY_GEOMETRY)
         if geometry is not None:
@@ -268,6 +291,7 @@ class MainWindow(QMainWindow):
         settings.put(settings.KEY_TAB, self.tabs.currentIndex())
         settings.put(settings.KEY_DEVICE, self.dlg.selected_serial() or "")
         settings.put(settings.KEY_PALETTE, theme.palette_name())
+        settings.put(settings.KEY_TERMINAL_THEME, theme.terminal_theme_name())
         settings.put(settings.KEY_FONT_SIZE, self.term.font_size())
         settings.sync()
         if self.ch is not None:

@@ -41,19 +41,23 @@ class TerminalWidget(QPlainTextEdit):
 
     # ---- Appearance ----
     def apply_theme(self):
-        """A terminal stays dark in both palettes, but the exact tones are tokens.
+        """Render in the selected terminal colour scheme (independent of the app).
 
         The visible area is the scroll area's *viewport*, which does not pick up
         a QPlainTextEdit background from the style sheet, so the palette is set
         on both and the viewport is told to fill itself.
         """
-        bg, fg = theme.color("term_bg"), theme.color("term_fg")
+        bg = theme.terminal_color("bg")
+        fg = theme.terminal_color("fg")
         self.setStyleSheet(
             "QPlainTextEdit { background-color: %s; color: %s; border: 1px solid %s; }"
             % (bg, fg, theme.color("border")))
         palette = self.palette()
         palette.setColor(QPalette.Base, QColor(bg))
         palette.setColor(QPalette.Text, QColor(fg))
+        palette.setColor(QPalette.Highlight, QColor(theme.terminal_color("selection")))
+        palette.setColor(QPalette.HighlightedText,
+                         QColor(theme.terminal_color("selection_fg")))
         self.setPalette(palette)
         self.viewport().setPalette(palette)
         self.viewport().setAutoFillBackground(True)
