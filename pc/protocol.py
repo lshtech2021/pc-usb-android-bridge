@@ -18,6 +18,7 @@ class MsgType:
     CONN_ATTACH, CONN_DETACH = 0x16, 0x17
     ACK, ERROR = 0x20, 0x21
     PING, PONG = 0x30, 0x31
+    PROXY_OPEN, PROXY_OPENED, PROXY_DATA, PROXY_CLOSE = 0x40, 0x41, 0x42, 0x43
 
 
 class ErrCode:
@@ -35,6 +36,11 @@ class ErrCode:
     PC_REJECTED = "PC_REJECTED"
     PC_ALREADY_CONNECTED = "PC_ALREADY_CONNECTED"
     PC_KEY_CHANGED = "PC_KEY_CHANGED"
+    PROXY_REFUSED = "PROXY_REFUSED"
+    PROXY_HOST_UNREACHABLE = "PROXY_HOST_UNREACHABLE"
+    PROXY_TIMEOUT = "PROXY_TIMEOUT"
+    PROXY_BAD_REQUEST = "PROXY_BAD_REQUEST"
+    PROXY_LIMIT = "PROXY_LIMIT"
 
 
 def encode_frame(msg_type: int, header: dict, payload: bytes = b"", seal=None) -> bytes:

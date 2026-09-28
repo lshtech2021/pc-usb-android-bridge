@@ -40,6 +40,9 @@ class PhoneClient:
         self.on_conn_list = None       # fn(list[dict])
         self.on_attach_ack = None      # fn(header, backlog_bytes)
         self._recv, self.channels = {}, {}
+        # Reverse tethering (SOCKS5): sid -> {"opened","data","close"} callbacks. Streams are
+        # always PC-initiated, so the PC owns the sid space for them.
+        self._proxy = {}
         self.save_dir = os.path.abspath("downloads")
         os.makedirs(self.save_dir, exist_ok=True)
         self.identity = PcIdentity.load_or_create()
@@ -114,6 +117,13 @@ class PhoneClient:
                 pass
         self._recv.clear()
         self.channels.clear()
+        # Wake every SOCKS5 stream so it closes its client socket instead of hanging on a dead link.
+        for sid, cbs in list(self._proxy.items()):
+            try:
+                cbs["close"](sid, "both", 0, "disconnected")
+            except Exception:
+                pass
+        self._proxy.clear()
         for fid, st in list(self._pending_up.items()):
             self.on_file_done and self.on_file_done(fid, st["name"], False, "up", "disconnected")
         self._pending_up.clear()
@@ -226,6 +236,38 @@ class PhoneClient:
         """Legacy alias: detach without stopping phone SSH."""
         self.detach(ch)
 
+    # ---------- Reverse tethering (SOCKS5 over the bridge) ----------
+    def alloc_proxy(self, cbs: dict) -> int:
+        """Reserve a sid and register the stream callbacks before PROXY_OPEN is sent.
+
+        PROXY_OPENED can arrive on the recv thread the instant the phone accepts the
+        connection, so the callback record must exist first.
+        """
+        sid = self._new_id()
+        self._proxy[sid] = cbs
+        return sid
+
+    def proxy_send_open(self, sid: int, host: str, port: int):
+        self.tp.send(MsgType.PROXY_OPEN, {"sid": sid, "host": host, "port": port})
+
+    def proxy_data(self, sid: int, data: bytes):
+        """Best-effort: drop bytes for a stream the phone has already torn down."""
+        if sid in self._proxy:
+            try:
+                self.tp.send(MsgType.PROXY_DATA, {"sid": sid}, data)
+            except Exception:
+                pass
+
+    def proxy_close(self, sid: int, dir: str, code: int = 0, reason: str = ""):
+        """Best-effort close; pops the record only on full teardown."""
+        if dir == "both" and self._proxy.pop(sid, None) is None:
+            return
+        try:
+            self.tp.send(MsgType.PROXY_CLOSE,
+                         {"sid": sid, "dir": dir, "code": code, "reason": reason})
+        except Exception:
+            pass
+
     # ---------- Message dispatch ----------
     def _on_frame(self, t, h, p):
         M = MsgType
@@ -288,6 +330,23 @@ class PhoneClient:
                 self.channels.pop(h["channel"], None)
                 self.on_remote_close and self.on_remote_close(
                     h["channel"], h.get("code", 0), h.get("reason", ""))
+            elif t == M.PROXY_OPENED:
+                cb = self._proxy.get(h.get("sid"))
+                if cb:
+                    cb["opened"](h.get("sid"), bool(h.get("ok")),
+                                 h.get("code", ""), h.get("message", ""))
+            elif t == M.PROXY_DATA:
+                cb = self._proxy.get(h.get("sid"))
+                if cb:
+                    cb["data"](h.get("sid"), p)
+            elif t == M.PROXY_CLOSE:
+                sid = h.get("sid")
+                cb = self._proxy.get(sid)
+                if cb:
+                    d = h.get("dir", "both")
+                    if d == "both":
+                        self._proxy.pop(sid, None)
+                    cb["close"](sid, d, h.get("code", 0), h.get("reason", ""))
             elif t == M.PING:
                 self.tp.send(M.PONG, {})
             elif t == M.PONG:
@@ -298,6 +357,10 @@ class PhoneClient:
                     self._fail_upload(h["id"], h.get("message", "") or code)
                     self.on_status and self.on_status(
                         f"[Error] {code} {h.get('message', '')}")
+                elif "sid" in h and h.get("sid") in self._proxy:
+                    sid = h["sid"]
+                    cb = self._proxy.pop(sid)
+                    cb["close"](sid, "both", code, h.get("message", "") or code)
                 elif "channel" in h and self.on_remote_error:
                     self.on_remote_error(h["channel"], code, h)
                 else:

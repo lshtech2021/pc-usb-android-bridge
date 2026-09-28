@@ -9,7 +9,7 @@ from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QMainWindow,
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
     QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
-    QTableWidgetItem)
+    QInputDialog, QTableWidgetItem)
 
 import settings
 import theme
@@ -17,6 +17,7 @@ import widgets
 from adb_manager import Adb
 from client import PhoneClient
 from dialogs import ConnectionDialog
+from proxy import DEFAULT_PORT, SocksProxyServer
 from terminal import TerminalWidget
 
 # Phone-reported connection state -> palette key for the picker dot.
@@ -32,6 +33,14 @@ TERMINAL_STATES = {
     "attaching": ("dot_connecting", "Attaching…"),
     "attached": ("dot_connected", "Attached"),
     "error": ("dot_error", "Attach failed"),
+}
+
+# Reverse tethering (SOCKS5) listener states. "listening" means up but the bridge is down.
+PROXY_STATES = {
+    "off": ("dot_disconnected", "Tether off"),
+    "listening": ("dot_connecting", "Tether idle"),
+    "active": ("dot_connected", "Tether on"),
+    "error": ("dot_error", "Tether error"),
 }
 
 SHORTCUTS = [
@@ -77,6 +86,7 @@ class MainWindow(QMainWindow):
     sig_rerr = pyqtSignal(object, str, object)
     sig_clist = pyqtSignal(object)
     sig_attach = pyqtSignal(object, object)
+    sig_proxy_state = pyqtSignal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -87,6 +97,8 @@ class MainWindow(QMainWindow):
         self._rows = {}
         self._conn_state = "disconnected"
         self._fullscreen = False
+        self._proxy_state = "off"
+        self._proxy_detail = ""
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -98,6 +110,8 @@ class MainWindow(QMainWindow):
         c.on_remote_error = lambda *a: self.sig_rerr.emit(*a)
         c.on_conn_list = self.sig_clist.emit
         c.on_attach_ack = lambda h, p: self.sig_attach.emit(h, p)
+        # Connect the proxy state signal before the listener exists so an early emit is queued.
+        self.sig_proxy_state.connect(self._on_proxy_state)
         for s, slot in ((self.sig_text, self._on_text), (self.sig_status, self._on_status),
                         (self.sig_hello, self._hello_ack),
                         (self.sig_fprog, self._on_fprog), (self.sig_fdone, self._on_fdone),
@@ -105,6 +119,10 @@ class MainWindow(QMainWindow):
                         (self.sig_rerr, self._on_rerr),
                         (self.sig_clist, self._on_clist), (self.sig_attach, self._on_attach)):
             s.connect(slot)
+        self.socks = SocksProxyServer(
+            lambda: self.client, port=self._saved_proxy_port(),
+            on_status=self.sig_status.emit,
+            on_state=lambda s, d: self.sig_proxy_state.emit(s, d))
         self._build_ui()
 
     def _build_ui(self):
@@ -183,6 +201,11 @@ class MainWindow(QMainWindow):
         self.act_dark = self._menu_action(
             m_view, "&Dark mode", self._set_dark, checkable=True)
         m_view.addSeparator()
+        self.act_proxy = self._menu_action(
+            m_view, "&Reverse tethering (SOCKS5)", self._toggle_proxy, checkable=True)
+        self.act_proxy.setToolTip("Serve a local SOCKS5 proxy that exits through the phone")
+        self._menu_action(m_view, "SOCKS &port…", self._set_proxy_port)
+        m_view.addSeparator()
         m_term = m_view.addMenu("Terminal &colors")
         self._term_actions = {}
         self._term_group = QActionGroup(self)
@@ -223,6 +246,7 @@ class MainWindow(QMainWindow):
         if app is not None:
             app.setStyleSheet(theme.stylesheet())
         self.chip.apply()
+        self.proxy_pill.apply()
         self.term_pill.apply()
         self.dlg.apply_theme()
         self.ftab.apply_theme()
@@ -285,6 +309,10 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             size = 11
         self.term.zoom(size - self.term.font_size())
+        # Default on, so the proxy is up as soon as the app launches; the toggled wiring
+        # below starts the listener (it only carries traffic while the bridge is sealed).
+        enabled = settings.get(settings.KEY_PROXY_ENABLED, True)
+        self.act_proxy.setChecked(str(enabled).lower() in ("true", "1"))
 
     def closeEvent(self, event):
         settings.put(settings.KEY_GEOMETRY, self.saveGeometry())
@@ -293,7 +321,10 @@ class MainWindow(QMainWindow):
         settings.put(settings.KEY_PALETTE, theme.palette_name())
         settings.put(settings.KEY_TERMINAL_THEME, theme.terminal_theme_name())
         settings.put(settings.KEY_FONT_SIZE, self.term.font_size())
+        settings.put(settings.KEY_PROXY_ENABLED, self.act_proxy.isChecked())
+        settings.put(settings.KEY_PROXY_PORT, self.socks.port)
         settings.sync()
+        self.socks.stop()
         if self.ch is not None:
             try:
                 self.client.detach(self.ch)
@@ -330,6 +361,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_disconnect)
         row.addWidget(theme.vertical_separator())
 
+        self.proxy_pill = theme.StatePill(PROXY_STATES, "off")
+        self.proxy_pill.setToolTip("Reverse tethering (SOCKS5) proxy state")
+        row.addWidget(self.proxy_pill, 0, Qt.AlignRight)
         self.chip = theme.connection_pill()
         row.addWidget(self.chip, 0, Qt.AlignRight)
         return card
@@ -367,6 +401,77 @@ class MainWindow(QMainWindow):
         self.btn_connect.setEnabled(state in ("disconnected", "error"))
         # Disconnect doubles as "cancel" while a handshake is still in flight.
         self.btn_disconnect.setEnabled(state in ("connecting", "connected"))
+        self._refresh_proxy_pill()
+
+    # ---- Reverse tethering (SOCKS5) ----
+    @staticmethod
+    def _saved_proxy_port() -> int:
+        try:
+            port = int(settings.get(settings.KEY_PROXY_PORT, DEFAULT_PORT))
+        except (TypeError, ValueError):
+            return DEFAULT_PORT
+        return port if 1024 <= port <= 65535 else DEFAULT_PORT
+
+    def _on_proxy_state(self, state: str, detail: str):
+        self._proxy_state = state
+        self._proxy_detail = detail if state == "error" else ""
+        self._refresh_proxy_pill()
+
+    def _refresh_proxy_pill(self):
+        pill = getattr(self, "proxy_pill", None)
+        if pill is None:
+            return
+        if self._proxy_state == "off":
+            pill.set_state("off")
+        elif self._proxy_state == "error":
+            pill.set_state("error", self._proxy_detail)
+        else:
+            # Listening is only useful while the bridge is up.
+            alive = bool(self.client.tp and self.client.tp.alive)
+            pill.set_state("active" if alive else "listening", self.socks.address)
+
+    def _toggle_proxy(self, on: bool):
+        settings.put(settings.KEY_PROXY_ENABLED, bool(on))
+        self._proxy_start() if on else self._proxy_stop()
+
+    def _proxy_start(self):
+        try:
+            self.socks.start()
+        except OSError as e:
+            # Port already taken (a second instance, or another app): fail loudly.
+            if self.act_proxy.isChecked():
+                self.act_proxy.setChecked(False)
+            self._proxy_state = "error"
+            self._proxy_detail = f"port {self.socks.port} unavailable"
+            self._refresh_proxy_pill()
+            self._status(f"Reverse tethering failed: {e}", 8000)
+            return
+        self._proxy_state = "listening"
+        self._proxy_detail = ""
+        self._refresh_proxy_pill()
+        self._status(f"Reverse tethering listening on {self.socks.address}", 6000)
+
+    def _proxy_stop(self):
+        self.socks.stop()
+        self._proxy_state = "off"
+        self._proxy_detail = ""
+        self._refresh_proxy_pill()
+
+    def _set_proxy_port(self):
+        port, ok = QInputDialog.getInt(
+            self, "SOCKS port", "Listen on 127.0.0.1:",
+            self.socks.port, 1024, 65535)
+        if not ok or port == self.socks.port:
+            return
+        was_running = self.socks.running
+        if was_running:
+            self.socks.stop()
+        self.socks.port = port
+        settings.put(settings.KEY_PROXY_PORT, port)
+        if was_running:
+            self._proxy_start()
+        else:
+            self._refresh_proxy_pill()
 
     # ---- Tab1 Messages ----
     def _msg_tab(self):

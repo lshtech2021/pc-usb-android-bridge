@@ -152,6 +152,7 @@ class BridgeService : Service() {
         private const val NOTIF_MSG_BASE = 1000
         private const val MAX_RECENT = 50
         const val PING_INTERVAL_MS = 15_000L
+        const val MAX_PROXY_STREAMS = 128
 
         @Volatile var token: String = ""
             private set
@@ -297,6 +298,9 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     private val outLock = Any()
     private val remotes = ConcurrentHashMap<Int, RemoteSession>()
     private val sinks = ConcurrentHashMap<Int, FileSink>()
+
+    /** Reverse-tether streams, each with its own reader/writer threads (no shared executor). */
+    private val proxies = ConcurrentHashMap<Int, ProxySession>()
 
     /** Remote channel operations run serially: guarantees OPEN -> DATA ordering without blocking the main read loop (TEXT/FILE/PING are unaffected by the SSH handshake) */
     private val remoteOps = Executors.newSingleThreadExecutor()
@@ -528,6 +532,48 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                     ConnectionHub.detach(optInt("channel"))
                     send(FrameIO.ACK, JSONObject().put("ok", true).put("channel", optInt("channel")))
                 }
+
+                // ---- Reverse tethering (SOCKS5): all O(1); blocking socket I/O runs on per-stream threads ----
+                FrameIO.PROXY_OPEN -> {
+                    val sid = optInt("sid")
+                    val host = optString("host")
+                    val port = optInt("port")
+                    if (host.isEmpty() || port !in 1..65535) {
+                        send(FrameIO.PROXY_OPENED, JSONObject().put("sid", sid).put("ok", false)
+                            .put("code", "PROXY_BAD_REQUEST").put("message", "invalid host/port"))
+                    } else if (proxies.size >= BridgeService.MAX_PROXY_STREAMS) {
+                        send(FrameIO.PROXY_OPENED, JSONObject().put("sid", sid).put("ok", false)
+                            .put("code", "PROXY_LIMIT").put("message", "stream limit reached"))
+                    } else {
+                        val ps = ProxySession(sid, { t, h, p -> send(t, h, p) },
+                            { s -> proxies.remove(s) })
+                        if (proxies.putIfAbsent(sid, ps) == null) {
+                            ps.start(host, port)
+                        } else {
+                            send(FrameIO.PROXY_OPENED, JSONObject().put("sid", sid).put("ok", false)
+                                .put("code", "PROXY_BAD_REQUEST").put("message", "duplicate sid"))
+                        }
+                    }
+                }
+
+                FrameIO.PROXY_DATA -> {
+                    val sid = optInt("sid")
+                    val ps = proxies[sid]
+                    if (ps != null && !ps.enqueue(f.payload)) {
+                        proxies.remove(sid)?.close()
+                        send(FrameIO.PROXY_CLOSE, JSONObject().put("sid", sid).put("dir", "both")
+                            .put("code", 0).put("reason", "buffer overflow"))
+                    }
+                }
+
+                FrameIO.PROXY_CLOSE -> {
+                    val sid = optInt("sid")
+                    if (optString("dir") == "c2s") {
+                        proxies[sid]?.halfCloseRemoteWrite()
+                    } else {
+                        proxies.remove(sid)?.close()
+                    }
+                }
                 else -> {}
             }
         }
@@ -604,6 +650,8 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         ConnectionHub.detachHandler(this)
         remoteOps.shutdownNow()
         remotes.values.forEach { it.close() }
+        proxies.values.forEach { it.close() }
+        proxies.clear()
         sinks.values.forEach { it.abort() }
         BridgeService.removeSession(this)
         runCatching { sock.close() }

@@ -18,6 +18,8 @@ object FrameIO {
     const val CONN_LIST = 0x14; const val CONN_LIST_RESULT = 0x15
     const val CONN_ATTACH = 0x16; const val CONN_DETACH = 0x17
     const val ACK = 0x20; const val ERROR = 0x21; const val PING = 0x30; const val PONG = 0x31
+    const val PROXY_OPEN = 0x40; const val PROXY_OPENED = 0x41
+    const val PROXY_DATA = 0x42; const val PROXY_CLOSE = 0x43
 
     /** Phone-side id space starts at 0x40000000 to avoid colliding with the PC side (starting at 1) */
     private val idSeq = AtomicInteger(0x40000000)

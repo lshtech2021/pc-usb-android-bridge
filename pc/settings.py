@@ -10,6 +10,8 @@ KEY_DEVICE = "connection/device"
 KEY_PALETTE = "appearance/palette"
 KEY_FONT_SIZE = "terminal/font_size"
 KEY_TERMINAL_THEME = "terminal/theme"
+KEY_PROXY_ENABLED = "proxy/enabled"
+KEY_PROXY_PORT = "proxy/port"
 
 
 def store() -> QSettings:
