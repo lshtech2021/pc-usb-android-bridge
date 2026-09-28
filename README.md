@@ -25,6 +25,7 @@ app-demo-6/
 │   ├── transport.py          TCP send/receive (+ post-HELLO seal)
 │   ├── adb_manager.py        adb device listing and port forwarding
 │   ├── requirements.txt      Dependencies (PyQt5, pyte, cryptography)
+│   ├── usb_bridge.spec       PyInstaller spec (build a standalone executable)
 │   └── downloads/            Files sent from the phone land here (created on first run)
 └── android/                  Android project (open this directory in Android Studio)
     └── app/src/main/java/com/example/usbbridge/
@@ -104,6 +105,33 @@ adb devices          # Only "<serial>   device" means it is connectable (unautho
 > On connect, the PC runs `adb -s <serial> forward tcp:12580 tcp:9999` (after `--remove-all`), mapping PC `127.0.0.1:12580` → phone `127.0.0.1:9999`. HELLO is cleartext (token + PC pubkey); all later frames are encrypted. Only **one** live session per PC fingerprint (`PC_ALREADY_CONNECTED` if a second client retries).
 
 **Threat limits:** Encryption + PC TOFU harden against other **local** processes on the PC that can open the forwarded port. They do **not** protect against a fully administered/compromised Windows host/VM, malware with admin rights, or OS-level screen recording. Company LAN users cannot MITM this USB/loopback path as designed.
+
+### 4. Build a standalone executable (optional)
+
+To hand the PC client to a machine without Python, freeze it with [PyInstaller](https://pyinstaller.org/). The app has no data files to collect — the stylesheet, palette and icons are all generated in code — so one command is enough (run it from `pc/`):
+
+```bash
+cd pc
+pip install -r requirements.txt pyinstaller
+pyinstaller usb_bridge.spec          # -> dist/USBBridge/  (ship the whole folder)
+```
+
+The result is `dist/USBBridge/USBBridge.exe` (no console window). Ship the **whole `dist/USBBridge/` folder** — the `.exe` needs the DLLs and Qt plugins next to it.
+
+For a single self-extracting `.exe` instead of a folder (starts slower and is more likely to trip antivirus heuristics):
+
+```bash
+pyinstaller --onefile --windowed --name USBBridge ui.py   # -> dist/USBBridge.exe
+```
+
+Both builds are ignored by git (`pc/build/`, `pc/dist/`).
+
+Caveats for a packaged build:
+
+- **`adb` is not bundled.** Keep `adb` on `PATH` or place platform-tools next to the executable; otherwise the device list stays empty with `[adb unavailable]`.
+- **Received files land in `downloads/` relative to the working directory.** A shortcut launched with `Start in` set to a non-writable folder (e.g. `C:\Windows\System32`) cannot create it — set the shortcut's **Start in** to a writable directory.
+- The PC identity is still `%USERPROFILE%\.usbbridge\identity.json`, so a frozen build keeps the same fingerprint as a source run (and the phone's trust persists).
+- The binary is unsigned, so Windows SmartScreen may warn on first launch ("More info → Run anyway"), and some antivirus tools flag PyInstaller output as a false positive.
 
 ---
 
