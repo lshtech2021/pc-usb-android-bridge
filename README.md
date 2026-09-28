@@ -82,11 +82,7 @@ If `python` is not available on the command line (Windows with only the py launc
 py ui.py
 ```
 
-If `adb` is not on PATH, there are two options: add the platform-tools directory to PATH, or edit the line in [ui.py](./pc/ui.py) that constructs `Adb` to specify an absolute path:
-
-```python
-self.adb, self.client, self.ch = Adb(path=r"D:\platform-tools\adb.exe"), PhoneClient(), None
-```
+If `adb` is not on PATH, set it in the UI: **Connection settings…** (Ctrl+,) → **adb path** → **Browse…** and pick `adb.exe` (e.g. `D:\platform-tools\adb.exe`). Leave the field empty to fall back to `adb` from PATH. The value is saved and reused on the next launch, and the device list refreshes immediately. Adding platform-tools to PATH also works.
 
 ### 3. Start the phone service and connect
 

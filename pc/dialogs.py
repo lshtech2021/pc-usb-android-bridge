@@ -4,9 +4,9 @@ The connection form lives here rather than in the window so the terminal gets
 the vertical space instead.
 """
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog, QGridLayout,
-                             QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                             QVBoxLayout)
+from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,
+                             QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                             QPushButton, QVBoxLayout)
 
 import theme
 
@@ -21,6 +21,7 @@ class ConnectionDialog(QDialog):
     disconnect_requested = pyqtSignal()
     refresh_requested = pyqtSignal()
     device_changed = pyqtSignal()
+    adb_path_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +50,19 @@ class ConnectionDialog(QDialog):
         device_row.setSpacing(theme.SPACE_S)
         device_row.addWidget(self.cmb_device, 1)
         device_row.addWidget(self.btn_refresh)
+
+        self.ed_adb = QLineEdit()
+        self.ed_adb.setPlaceholderText("adb (found on PATH)")
+        self.ed_adb.setToolTip(
+            "Path to the adb executable. Leave empty to use adb from PATH.")
+        self.ed_adb.editingFinished.connect(self.adb_path_changed)
+        self.btn_adb_browse = QPushButton("Browse…")
+        self.btn_adb_browse.setToolTip("Pick the adb executable (platform-tools)")
+        self.btn_adb_browse.clicked.connect(self._browse_adb)
+        adb_row = QHBoxLayout()
+        adb_row.setSpacing(theme.SPACE_S)
+        adb_row.addWidget(self.ed_adb, 1)
+        adb_row.addWidget(self.btn_adb_browse)
 
         self.ed_token = QLineEdit()
         self.ed_token.setPlaceholderText("8 hex digits shown on the phone")
@@ -86,13 +100,15 @@ class ConnectionDialog(QDialog):
 
         form.addWidget(theme.field_label("Device"), 0, 0)
         form.addLayout(device_row, 0, 1)
-        form.addWidget(theme.field_label("Token"), 1, 0)
-        form.addLayout(token_row, 1, 1)
-        form.addWidget(theme.field_label("PC name"), 2, 0)
-        form.addWidget(self.ed_pc_name, 2, 1)
-        form.addWidget(theme.field_label("Fingerprint"), 3, 0)
-        form.addLayout(fp_row, 3, 1)
-        form.addWidget(self.lbl_fp_note, 4, 1)
+        form.addWidget(theme.field_label("adb path"), 1, 0)
+        form.addLayout(adb_row, 1, 1)
+        form.addWidget(theme.field_label("Token"), 2, 0)
+        form.addLayout(token_row, 2, 1)
+        form.addWidget(theme.field_label("PC name"), 3, 0)
+        form.addWidget(self.ed_pc_name, 3, 1)
+        form.addWidget(theme.field_label("Fingerprint"), 4, 0)
+        form.addLayout(fp_row, 4, 1)
+        form.addWidget(self.lbl_fp_note, 5, 1)
         outer.addLayout(form)
 
         self.pill = theme.connection_pill()
@@ -141,6 +157,12 @@ class ConnectionDialog(QDialog):
     def device_label(self):
         return self.cmb_device.currentText()
 
+    def adb_path(self) -> str:
+        return self.ed_adb.text().strip()
+
+    def set_adb_path(self, path: str):
+        self.ed_adb.setText(path or "")
+
     def token(self) -> str:
         return self.ed_token.text().strip()
 
@@ -163,6 +185,14 @@ class ConnectionDialog(QDialog):
         self.pill.apply()
 
     # ---- Local behaviour ----
+    def _browse_adb(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select the adb executable", self.ed_adb.text() or "",
+            "adb executable (adb adb.exe);;All files (*)")
+        if path:
+            self.ed_adb.setText(path)
+            self.adb_path_changed.emit()
+
     def _toggle_token(self, shown: bool):
         self.ed_token.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
         self.btn_show.setText("Hide" if shown else "Show")

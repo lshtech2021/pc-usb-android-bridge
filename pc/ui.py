@@ -92,7 +92,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("USB Bridge Client")
         self.resize(900, 640)
-        self.adb, self.client, self.ch = Adb(), PhoneClient(), None
+        self.adb, self.client, self.ch = (
+            Adb(path=settings.get(settings.KEY_ADB_PATH) or "adb"), PhoneClient(), None)
         self._conn_items = []   # list of connection dicts from phone
         self._rows = {}
         self._conn_state = "disconnected"
@@ -131,8 +132,10 @@ class MainWindow(QMainWindow):
         self.dlg.disconnect_requested.connect(self.disconnect_phone)
         self.dlg.refresh_requested.connect(self.refresh)
         self.dlg.device_changed.connect(self._on_device_changed)
+        self.dlg.adb_path_changed.connect(self._on_adb_path_changed)
         self.dlg.set_pc_name(self.client.identity.pc_name)
         self.dlg.set_identity(self.client.identity.short_id, self.client.identity.pc_id)
+        self.dlg.set_adb_path(settings.get(settings.KEY_ADB_PATH, ""))
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._msg_tab(), "Messages")
@@ -318,6 +321,7 @@ class MainWindow(QMainWindow):
         settings.put(settings.KEY_GEOMETRY, self.saveGeometry())
         settings.put(settings.KEY_TAB, self.tabs.currentIndex())
         settings.put(settings.KEY_DEVICE, self.dlg.selected_serial() or "")
+        settings.put(settings.KEY_ADB_PATH, self.dlg.adb_path())
         settings.put(settings.KEY_PALETTE, theme.palette_name())
         settings.put(settings.KEY_TERMINAL_THEME, theme.terminal_theme_name())
         settings.put(settings.KEY_FONT_SIZE, self.term.font_size())
@@ -378,6 +382,14 @@ class MainWindow(QMainWindow):
         self.lbl_device.setText(label or "No device")
         self.lbl_device.setToolTip(serial or "")
         settings.put(settings.KEY_DEVICE, serial or "")
+
+    def _on_adb_path_changed(self):
+        """Point the client at a different adb binary without restarting."""
+        path = self.dlg.adb_path()
+        settings.put(settings.KEY_ADB_PATH, path)
+        self.adb = Adb(path=path or "adb")
+        self.refresh()
+        self._status(f"Using adb: {self.adb.path}", 5000)
 
     def _refresh_device_list(self):
         devices = []
