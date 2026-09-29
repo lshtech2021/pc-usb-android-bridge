@@ -308,7 +308,7 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     @Volatile private var closed = false
     @Volatile private var authed = false
     private var pingThread: Thread? = null
-    private var seal: LinkCrypto.Seal? = null
+    @Volatile private var seal: LinkCrypto.Seal? = null    // read by every sender thread
     private var claimedPcId: String? = null
 
     override fun run() {
@@ -328,9 +328,12 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
     fun send(type: Int, header: JSONObject, payload: ByteArray = ByteArray(0)) {
         if (closed) return
-        val data = FrameIO.encode(type, header, payload, seal)
+        // Encode inside the lock, not before it: LinkCrypto.Seal takes its nonce from a
+        // counter, so two threads that seal outside the lock can hand each other their
+        // nonces and break the PC's counter. PROXY_DATA is sent from a thread per tunnel,
+        // so this happens as soon as a browser opens more than one connection.
         synchronized(outLock) {
-            out.write(data)
+            out.write(FrameIO.encode(type, header, payload, seal))
             out.flush()
         }
     }

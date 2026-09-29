@@ -162,7 +162,11 @@ class ProxyStream:
             self._sock.settimeout(HANDSHAKE_TIMEOUT)
             host, port = self._handshake()
             self._sock.settimeout(None)
-            if not (self._client.tp and self._client.tp.alive):
+            # Refuse until the link is sealed, not just connected: a PROXY_OPEN sent while
+            # the handshake is still in flight (the phone showing its "approve this PC?"
+            # prompt, say) reaches the phone as cleartext, which it must treat as a protocol
+            # violation and close the session over. The browser just sees a failed CONNECT.
+            if not (self._client.tp and self._client.tp.alive and self._client.tp.sealed):
                 self._reply(REP_GENERAL)
                 return
             self._sid = self._client.alloc_proxy({

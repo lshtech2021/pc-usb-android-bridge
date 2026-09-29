@@ -17,6 +17,12 @@ class Transport:
     def alive(self):
         return self._running
 
+    @property
+    def sealed(self) -> bool:
+        """True once the post-HELLO seal is active. Before that the link is cleartext and
+        the phone is still unauthenticated: anything but a HELLO reads as a violation."""
+        return self._seal is not None
+
     def start(self):
         self.sock = socket.create_connection((self.host, self.port), timeout=5)
         self.sock.settimeout(None)
@@ -28,8 +34,12 @@ class Transport:
         self._seal = seal
 
     def send(self, msg_type, header, payload=b""):
-        data = encode_frame(msg_type, header, payload, seal=self._seal)
+        # Sealing must happen under the send lock: the AEAD nonce is a counter, so the order
+        # frames are encrypted in has to be the order they reach the wire. Sealing outside the
+        # lock lets two threads swap nonces, which desyncs the peer's counter on the first
+        # frame and kills the session (PROXY_DATA is sent from one thread per tunnel).
         with self._send_lock:
+            data = encode_frame(msg_type, header, payload, seal=self._seal)
             self.sock.sendall(data)
 
     def close(self):
