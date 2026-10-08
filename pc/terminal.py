@@ -4,7 +4,7 @@ Copy/paste: Ctrl+Shift+C / Ctrl+Shift+V (or context menu). Ctrl+C with a selecti
 copies; otherwise sends interrupt (0x03) to the remote. Ctrl+wheel / Ctrl+plus /
 Ctrl+minus zoom the font.
 """
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette, QTextCursor, QKeySequence
 from PyQt5.QtWidgets import QApplication, QPlainTextEdit, QAction, QMenu
 
@@ -169,6 +169,16 @@ class TerminalWidget(QPlainTextEdit):
             text = text.replace("\r\n", "\n").replace("\r", "\n")
             self.bytes_out.emit(text.encode("utf-8", "ignore"))
 
+    def event(self, ev):
+        # QWidget::event() consumes Tab/Backtab for focus traversal *before*
+        # keyPressEvent() runs, so the terminal never sees them. While attached
+        # we want Tab to reach the remote shell (completion); intercept here.
+        if (self._attached and ev.type() == QEvent.KeyPress
+                and ev.key() in (Qt.Key_Tab, Qt.Key_Backtab)):
+            self.keyPressEvent(ev)
+            return True
+        return super().event(ev)
+
     def keyPressEvent(self, event: QKeyEvent):
         key = event.key()
         mods = event.modifiers()
@@ -262,6 +272,7 @@ class TerminalWidget(QPlainTextEdit):
             Qt.Key_Enter: b"\r",
             Qt.Key_Backspace: b"\x7f",
             Qt.Key_Tab: b"\t",
+            Qt.Key_Backtab: b"\x1b[Z",
             Qt.Key_Escape: b"\x1b",
             Qt.Key_Up: b"\x1b[A",
             Qt.Key_Down: b"\x1b[B",
