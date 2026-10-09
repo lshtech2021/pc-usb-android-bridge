@@ -25,13 +25,15 @@ class TerminalWidget(QPlainTextEdit):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Set before any setter that can deliver an event: event() reads it, and
+        # setFont() below fires a FontChange the moment the widget is constructed.
+        self._attached = False
         self.setReadOnly(True)
         self.setUndoRedoEnabled(False)
         self._font_size = 11
         self._apply_font()
         self._screen = pyte.Screen(COLS, ROWS)
         self._stream = pyte.ByteStream(self._screen)
-        self._attached = False
         self.setFocusPolicy(Qt.StrongFocus)
         self.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
