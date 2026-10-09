@@ -46,6 +46,11 @@
 
     <string name="notif_action_stop">Stop</string>
 
+    <!-- Back press on the main screen -->
+    <string name="exit_title">Exit USB Bridge?</string>
+    <string name="exit_message">This closes the app. The bridge service keeps running; stop it from its notification or the main screen.</string>
+    <string name="action_exit">Exit</string>
+
     <!-- Shared actions -->
     <string name="action_cancel">Cancel</string>
     <string name="action_close">Close</string>

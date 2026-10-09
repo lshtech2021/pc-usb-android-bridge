@@ -20,6 +20,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -115,6 +116,21 @@ class MainActivity : AppCompatActivity() {
 
         refreshSaveFolderLabel()
         refreshServiceStatus()
+
+        // This is the root screen, so Back would otherwise close the app outright. Confirm
+        // first, since leaving also drops out of any open SSH session view.
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = confirmExit()
+        })
+    }
+
+    private fun confirmExit() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.exit_title)
+            .setMessage(R.string.exit_message)
+            .setPositiveButton(R.string.action_exit) { _, _ -> finishAffinity() }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
     }
 
     // ---------- Layout building ----------

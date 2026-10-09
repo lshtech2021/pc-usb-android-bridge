@@ -256,8 +256,12 @@ class BridgeService : Service() {
             ongoing: Boolean = false,
             channelId: String = CHANNEL_SERVICE
         ): Notification {
+            // Reuse the running MainActivity (and drop any activity above it) instead of
+            // stacking another copy each time a notification is tapped.
+            val openIntent = Intent(ctx, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             val open = PendingIntent.getActivity(
-                ctx, 0, Intent(ctx, MainActivity::class.java),
+                ctx, 0, openIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val builder = NotificationCompat.Builder(ctx, channelId)
                 .setContentTitle(title)
