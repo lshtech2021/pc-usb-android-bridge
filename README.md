@@ -6,7 +6,9 @@ The PC client (Python + PyQt5) connects to the phone app (Android foreground ser
 2. **Bidirectional text messaging**
 3. **Remote SSH via phone-managed connections**: create/start SSH profiles on the phone (secrets stay on the phone); the PC attaches by connection ID (`ID_01`…) to an interactive terminal
 
-See [prd.md](./prd.md) for design details and the protocol definition.
+See [prd.md](./prd.md) for design details and [PROTOCOL.md](./PROTOCOL.md) for the
+normative PC ↔ Android protocol specification (frame grammar, message API,
+error codes, and feature flows).
 
 ---
 

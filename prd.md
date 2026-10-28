@@ -77,6 +77,10 @@ The most reliable way to carry USB communication at the application layer is **A
 
 ## 3. Custom Application-Layer Protocol (identical on both ends)
 
+> **Note:** this section is the historical design write-up. The normative,
+> up-to-date specification (frame grammar, handshake + AES-GCM sealing, full
+> message API, error codes, proxy tethering) lives in [PROTOCOL.md](./PROTOCOL.md).
+
 **Frame format (big-endian):**
 
 ```
