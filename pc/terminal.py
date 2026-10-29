@@ -2,7 +2,11 @@
 
 Copy/paste: Ctrl+Shift+C / Ctrl+Shift+V (or context menu). Ctrl+C with a selection
 copies; otherwise sends interrupt (0x03) to the remote. Ctrl+wheel / Ctrl+plus /
-Ctrl+minus zoom the font.
+Ctrl+minus zoom the font. Mouse wheel / scrollbar / Shift+PageUp|PageDown scroll
+through local scrollback history.
+
+All scrollback is kept in a per-session file. Only a fixed memory window is held
+in RAM / rendered; scrolling to the edge pages older or newer lines from the file.
 """
 from PyQt5.QtCore import Qt, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeyEvent, QPalette, QTextCursor, QKeySequence
@@ -11,9 +15,15 @@ from PyQt5.QtWidgets import QApplication, QPlainTextEdit, QAction, QMenu
 import pyte
 
 import theme
+from scrollback import ScrollbackCache, session_path
 
 
 COLS, ROWS = 120, 30
+# Max history lines kept in RAM / shown at once (live PTY rows are extra).
+# Everything older lives only in the session file (unlimited).
+SCROLLBACK_MEMORY = 10000
+# Lines to page in from the session file when the user hits the scroll edge.
+SCROLLBACK_PAGE = 500
 MIN_FONT_SIZE, MAX_FONT_SIZE = 7, 26
 
 
@@ -30,15 +40,26 @@ class TerminalWidget(QPlainTextEdit):
         self._attached = False
         self.setReadOnly(True)
         self.setUndoRedoEnabled(False)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._font_size = 11
         self._apply_font()
-        self._screen = pyte.Screen(COLS, ROWS)
+        # Hot window only; lines that fall out are spilled to the session file.
+        self._screen = pyte.HistoryScreen(COLS, ROWS, history=SCROLLBACK_MEMORY)
         self._stream = pyte.ByteStream(self._screen)
+        self._session_id = "default"
+        self._cache = ScrollbackCache(session_path(self._session_id))
+        # Absolute index into (file + hot) of the first displayed history line.
+        self._view_start = 0
+        self._following = True
+        self._paging_depth = 0
         self.setFocusPolicy(Qt.StrongFocus)
         self.setTextInteractionFlags(
             Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
+        self.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.apply_theme()
 
     # ---- Appearance ----
@@ -89,15 +110,27 @@ class TerminalWidget(QPlainTextEdit):
             event.accept()
             return
         super().wheelEvent(event)
+        self._maybe_page()
 
-    def clear_screen(self):
+    def begin_session(self, session_id: str = "default"):
+        """Start a fresh scrollback session (new cache file + cleared screen)."""
+        self._session_id = session_id or "default"
+        self._cache = ScrollbackCache(session_path(self._session_id))
+        self._cache.reset()
+        self._view_start = 0
+        self._following = True
         self._screen.reset()
         self._render()
+
+    def clear_screen(self):
+        self.begin_session(self._session_id)
 
     def feed(self, data: bytes):
         if not data:
             return
+        prev = list(self._screen.history.top)
         self._stream.feed(data)
+        self._spill_history(prev)
         self._render()
 
     def set_attached(self, attached: bool):
@@ -105,16 +138,131 @@ class TerminalWidget(QPlainTextEdit):
         if attached:
             self.setFocus()
 
-    def _render(self):
-        # Preserve selection across refresh when possible
+    def session_file(self) -> str:
+        return str(self._cache.path)
+
+    @staticmethod
+    def _row_text(row, columns: int) -> str:
+        return "".join(row[x].data for x in range(columns))
+
+    def _spill_history(self, prev_top):
+        """Append lines dropped from pyte's hot deque to the session file."""
+        if not prev_top:
+            return
+        cur_ids = {id(r) for r in self._screen.history.top}
+        spilled = []
+        for row in prev_top:
+            if id(row) in cur_ids:
+                break
+            spilled.append(self._row_text(row, self._screen.columns))
+        if spilled:
+            self._cache.extend(spilled)
+
+    def _scroll_len(self) -> int:
+        return len(self._cache) + len(self._screen.history.top)
+
+    def _hot_texts(self) -> list[str]:
+        cols = self._screen.columns
+        return [self._row_text(row, cols) for row in self._screen.history.top]
+
+    def _slice_scrollback(self, start: int, end: int) -> list[str]:
+        """History lines [start:end] across session file + hot pyte buffer."""
+        file_n = len(self._cache)
+        hot = self._hot_texts()
+        total = file_n + len(hot)
+        end = max(0, min(end, total))
+        start = max(0, min(start, end))
+        lines: list[str] = []
+        if start < file_n:
+            lines.extend(self._cache.slice(start, min(end, file_n)))
+        if end > file_n:
+            hs = max(0, start - file_n)
+            he = end - file_n
+            lines.extend(hot[hs:he])
+        return lines
+
+    def _on_scroll(self, _value: int):
+        self._maybe_page()
+
+    def _maybe_page(self):
+        if self._paging_depth:
+            return
+        sb = self.verticalScrollBar()
+        if sb.value() <= 8:
+            self._page_older()
+        elif sb.value() >= sb.maximum() - 4:
+            self._page_newer_or_follow()
+
+    def _page_older(self):
+        if self._view_start <= 0:
+            return
+        page = min(SCROLLBACK_PAGE, self._view_start)
+        self._paging_depth += 1
+        try:
+            self._following = False
+            sb = self.verticalScrollBar()
+            old_max = sb.maximum()
+            old_val = sb.value()
+            self._view_start -= page
+            self._render(preserve_scroll=False)
+            new_max = sb.maximum()
+            sb.setValue(old_val + (new_max - old_max))
+        finally:
+            self._paging_depth = max(0, self._paging_depth - 1)
+
+    def _page_newer_or_follow(self):
+        total = self._scroll_len()
+        end = self._view_start + SCROLLBACK_MEMORY
+        if end >= total:
+            if not self._following:
+                self._following = True
+                self._render()
+            return
+        page = min(SCROLLBACK_PAGE, total - end)
+        self._paging_depth += 1
+        try:
+            sb = self.verticalScrollBar()
+            old_val = sb.value()
+            self._view_start += page
+            if self._view_start + SCROLLBACK_MEMORY >= total:
+                self._following = True
+            self._render(preserve_scroll=False)
+            # Stay near the bottom edge so further scrolling can page again.
+            sb.setValue(min(old_val, sb.maximum()))
+        finally:
+            self._paging_depth = max(0, self._paging_depth - 1)
+
+    def _render(self, preserve_scroll: bool = True):
+        # Ignore scrollbar signals from setPlainText / setValue so live output
+        # cannot accidentally page out of follow mode.
+        self._paging_depth += 1
+        try:
+            self._render_body(preserve_scroll)
+        finally:
+            self._paging_depth = max(0, self._paging_depth - 1)
+
+    def _render_body(self, preserve_scroll: bool = True):
+        sb = self.verticalScrollBar()
+        old_scroll = sb.value()
+
+        total = self._scroll_len()
+        if self._following:
+            self._view_start = max(0, total - SCROLLBACK_MEMORY)
+
+        start = self._view_start
+        end = min(total, start + SCROLLBACK_MEMORY)
+        lines = self._slice_scrollback(start, end)
+        # Live PTY rows only when this window includes the newest history.
+        show_screen = self._following or end >= total
+        if show_screen:
+            cols = self._screen.columns
+            for y in range(self._screen.lines):
+                lines.append(self._row_text(self._screen.buffer[y], cols))
+
         had_sel = self.textCursor().hasSelection()
         sel_start = self.textCursor().selectionStart() if had_sel else 0
         sel_end = self.textCursor().selectionEnd() if had_sel else 0
 
-        lines = []
-        for y in range(self._screen.lines):
-            row = self._screen.buffer[y]
-            lines.append("".join(row[x].data for x in range(self._screen.columns)))
         text = "\n".join(lines)
         self.setPlainText(text)
 
@@ -123,15 +271,21 @@ class TerminalWidget(QPlainTextEdit):
             cur.setPosition(min(sel_start, len(text)))
             cur.setPosition(min(sel_end, len(text)), QTextCursor.KeepAnchor)
             self.setTextCursor(cur)
-        else:
+        elif self._following:
+            hist_shown = end - start
             cur = self.textCursor()
-            block = min(self._screen.cursor.y, self.blockCount() - 1)
+            block = min(hist_shown + self._screen.cursor.y, self.blockCount() - 1)
             cur.movePosition(QTextCursor.Start)
             for _ in range(block):
                 cur.movePosition(QTextCursor.NextBlock)
             cur.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor,
                              min(self._screen.cursor.x, COLS - 1))
             self.setTextCursor(cur)
+
+        if self._following:
+            sb.setValue(sb.maximum())
+        elif preserve_scroll:
+            sb.setValue(min(old_scroll, sb.maximum()))
 
     def _context_menu(self, pos):
         # A tab in the action text is rendered as the shortcut column by QMenu.
@@ -236,6 +390,20 @@ class TerminalWidget(QPlainTextEdit):
         # Ctrl+V without shift: paste (also common on Windows)
         if ctrl and key == Qt.Key_V and not shift:
             self._paste_clipboard()
+            event.accept()
+            return
+
+        # Shift+PageUp/PageDown scroll local scrollback; plain Page* go remote.
+        if shift and key == Qt.Key_PageUp:
+            sb = self.verticalScrollBar()
+            sb.setValue(sb.value() - sb.pageStep())
+            self._maybe_page()
+            event.accept()
+            return
+        if shift and key == Qt.Key_PageDown:
+            sb = self.verticalScrollBar()
+            sb.setValue(sb.value() + sb.pageStep())
+            self._maybe_page()
             event.accept()
             return
 

@@ -56,6 +56,7 @@ SHORTCUTS = [
     ("Ctrl+Shift+C", "Copy from the terminal"),
     ("Ctrl+Shift+V", "Paste into the terminal"),
     ("Ctrl+C", "Terminal: copy if text is selected, else interrupt the remote"),
+    ("Shift+PageUp/PageDown", "Scroll terminal history (mouse wheel also works)"),
     ("Ctrl+Q", "Quit"),
 ]
 
@@ -775,7 +776,7 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Notice", "No connection selected")
         if self.ch is not None:
             self.detach_conn()
-        self.term.clear_screen()
+        self.term.begin_session(str(cid))
         self._set_term_state("attaching", str(cid))
         self.ch = self.client.attach(cid)
 
