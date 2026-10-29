@@ -25,6 +25,7 @@ Build a client on the PC side that communicates with a phone-side service over U
 | F9 | Device discovery and connection management | List adb online devices, connect, disconnect (disconnect also clears adb forward and local partial files) |
 | F10 | Link authentication | Correct token required; unknown PC fingerprint requires phone Approve; only one live session per PC fingerprint; post-HELLO frames AES-GCM sealed |
 | F11 | Heartbeat keepalive | 15s heartbeat on both sides; when the network thread exits abnormally the UI clearly shows "connection closed" |
+| F12 | Remote file explorer | The PC browses the SSH target server's filesystem (dirs-first listing, path bar navigation) over a phone-opened SFTP channel; uploads (collision confirm, cancel deletes the remote partial) and downloads (save-as, SHA256 verified, cancel deletes the local partial) show progress rows; new folder / rename / delete work with server errors surfaced; the terminal and the file browser work simultaneously on the same connection; secrets never leave the phone |
 
 ### 1.3 Non-functional requirements
 
@@ -55,7 +56,7 @@ Build a client on the PC side that communicates with a phone-side service over U
 ### 1.5 Explicitly out of scope
 
 - An adb-free approach (would need root or a custom ROM);
-- Resume-after-interruption, parallel multi-device support, file directory tree browsing;
+- Resume-after-interruption, parallel multi-device support (remote-server file directory tree browsing is now in scope — F12);
 - Full terminal emulation on the phone (ANSI rendering of full-screen programs such as vim/htop), see §8.
 
 ## 2. Overall Architecture
@@ -1379,7 +1380,8 @@ class MainActivity : AppCompatActivity() {
 | **Remote terminal** | Product path: phone-managed hub + PC attach-by-ID + **pyte** interactive terminal (raw keys, 120×30 PTY). Still not full truecolor / every VT quirk; window-size negotiate is deferred. Sessions outlive USB; Stop on phone ends SSH |
 | **Pseudo-terminal parameters** | `setPtySize(120, 30)` is already delivered; `setEnv("TERM", ...)` requires `AcceptEnv` on the target sshd, otherwise it is ignored, and `export TERM=xterm-256color` on the remote can serve as a fallback |
 | **Backpressure** | The phone's stdin pipe for `REMOTE_DATA` is 1MB; once full, the writing thread blocks (blocking only the remote channel queue, not text/file/heartbeat); unbounded fast input can still pile up, so switch to a bounded queue + drop policy if needed |
-| **Large files / resume** | Already chunked + SHA256 verified on both ends; resuming only requires adding an `offset` field to `FILE_META` and seeking on the receiving side |
+| **Remote file explorer** | Implemented (F12): `FS_*` protocol family (0x50–0x5F) + phone-opened `ChannelSftp` + bounded 4 MiB upload queue (overflow → that upload fails with `buffer overflow`) + per-download stream threads + listing caps (400 entries / 40 KiB names, 16-bit headerLen) + `ACK {fs_id}` upload completion. The SFTP channel is binding-lifetime (closes on USB disconnect); the shell survives. JSch `ls()` may itself truncate very large directories (~100–200 entries per READDIR batch) — surfaced as a truncated-listing notice |
+| **Large files / resume** | Already chunked + SHA256 verified on both ends; resuming only requires adding an `offset` field to `FILE_META` and seeking on the receiving side (the FS family could gain the same `offset` field later) |
 | **Multi-device / multi-session** | The server supports multiple connections, but the PC connects to only one device at a time; multiple devices require forwarding each serial to a different local port on the PC |
 | **App-free alternative** | Install Termux on the phone and run `sshd`, then after `adb forward` the PC first SSHes into the phone and from there SSHes to the target — quick to validate, but no custom UI or file management |
 | **adb-free approach** | Requires phone root or system-level support (e.g. an automotive head unit / custom ROM exposing TCP directly); otherwise ADB is the standard approach |

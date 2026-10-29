@@ -13,6 +13,7 @@ KEY_FONT_SIZE = "terminal/font_size"
 KEY_TERMINAL_THEME = "terminal/theme"
 KEY_PROXY_ENABLED = "proxy/enabled"
 KEY_PROXY_PORT = "proxy/port"
+KEY_FS_DOWNLOAD_DIR = "fs/download_dir"
 
 
 def store() -> QSettings:

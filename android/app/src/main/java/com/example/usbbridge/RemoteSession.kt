@@ -2,6 +2,7 @@ package com.example.usbbridge
 
 import com.jcraft.jsch.Channel
 import com.jcraft.jsch.ChannelExec
+import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.ChannelShell
 import com.jcraft.jsch.JSch
 import com.jcraft.jsch.Session
@@ -65,6 +66,16 @@ class RemoteSession(
             channel = ch
             watchClose(ch) { onClose(ch.exitStatus, "exec finished") }
         }
+
+    /** Open an SFTP channel on the connected session (file explorer feature).
+     *  The caller tears it down with ChannelSftp.disconnect() only — never [close],
+     *  which would kill the shell channel and the whole session. */
+    fun openSftp(): ChannelSftp? {
+        val s = session ?: return null
+        val ch = s.openChannel("sftp") as ChannelSftp          // Android's default charset is UTF-8
+        ch.connect(10_000)             // throws JSchException when the server has no sftp subsystem
+        return ch
+    }
 
     private fun connect(host: String, port: Int, user: String, auth: Auth, block: () -> Unit) {
         ensureCryptoProviders()

@@ -44,6 +44,7 @@ only** — `127.0.0.1:9999`. The PC reaches it through an adb port forward:
 | F2 | Text messages | both | `TEXT` (+ `ACK` from phone) |
 | F3 | Remote terminal over phone-managed SSH | PC drives, phone owns SSH | `CONN_LIST` / `CONN_ATTACH` / `CONN_DETACH` / `REMOTE_DATA` / `REMOTE_OUTPUT` / `REMOTE_CLOSE` |
 | F4 | Reverse tethering (SOCKS5) | PC-initiated streams, phone dials out | `PROXY_OPEN` / `PROXY_OPENED` / `PROXY_DATA` / `PROXY_CLOSE` |
+| F5 | Remote file explorer (SFTP over phone-managed SSH) | PC drives, phone owns SSH + SFTP | `FS_OPEN` / `FS_OPENED` / `FS_CLOSE` / `FS_LIST` / `FS_LIST_RESULT` / `FS_MKDIR` / `FS_DELETE` / `FS_RENAME` / `FS_OP_RESULT` / `FS_DL_META` / `FS_DL_RESULT` / `FS_UL_META` / `FS_UL_RESULT` / `FS_CHUNK` / `FS_END` / `FS_ABORT` (+ `ACK {fs_id}`) |
 | — | Handshake / keepalive / errors | both | `HELLO` / `ACK` / `PING` / `PONG` / `ERROR` |
 
 The PC never receives SSH credentials: SSH profiles (host, port, user, auth,
@@ -253,6 +254,22 @@ key      = HKDF-SHA256(salt, info="usb-bridge-link-v1", ikm, L=32)   (RFC 5869)
 | `PROXY_OPENED` | `0x41` | phone → PC | `{sid, ok, code?, message?}` | — |
 | `PROXY_DATA` | `0x42` | both | `{sid}` | stream bytes |
 | `PROXY_CLOSE` | `0x43` | both | `{sid, dir, code, reason}` | — |
+| `FS_OPEN` | `0x50` | PC → phone | `{channel, connection_id}` | — |
+| `FS_OPENED` | `0x51` | phone → PC | `{channel, ok, code?, message?}` | — |
+| `FS_CLOSE` | `0x52` | both | `{channel}` (+ `code, reason` when phone → PC) | — |
+| `FS_LIST` | `0x53` | PC → phone | `{channel, req, path}` | — |
+| `FS_LIST_RESULT` | `0x54` | phone → PC | `{channel, req, ok, path, entries?, truncated?, code?, message?}` | — |
+| `FS_MKDIR` | `0x55` | PC → phone | `{channel, req, path}` | — |
+| `FS_DELETE` | `0x56` | PC → phone | `{channel, req, path}` | — |
+| `FS_RENAME` | `0x57` | PC → phone | `{channel, req, path, path2}` | — |
+| `FS_OP_RESULT` | `0x58` | phone → PC | `{channel, req, op, ok, code?, message?}` | — |
+| `FS_DL_META` | `0x59` | PC → phone | `{channel, id, path}` | — |
+| `FS_DL_RESULT` | `0x5A` | phone → PC | `{channel, id, ok, size?, code?, message?}` | — |
+| `FS_UL_META` | `0x5B` | PC → phone | `{channel, id, path, size}` | — |
+| `FS_UL_RESULT` | `0x5C` | phone → PC | `{channel, id, ok, code?, message?}` | — |
+| `FS_CHUNK` | `0x5D` | both | `{channel, id}` | transfer bytes ≤ 256 KiB |
+| `FS_END` | `0x5E` | both | `{channel, id, ok, sha256?, error?}` | — |
+| `FS_ABORT` | `0x5F` | PC → phone | `{channel, id}` | — |
 
 ### 4.2 Identifiers (id / channel / sid)
 
@@ -261,9 +278,10 @@ A single int namespace per direction, so concurrent operations never collide:
 - **PC allocates**: 1, 2, 3, … (up to `0x3FFFFFFF`) — `PhoneClient._new_id()`
 - **Phone allocates**: from `0x40000000` upward — `FrameIO.nextId()`
 
-Used for TEXT `id`, FILE `id`, remote `channel` and proxy `sid`. The receiver
-keys its tables on the sender's id, so both sides can upload/download,
-attach, and open proxy streams simultaneously without clashing.
+Used for TEXT `id`, FILE `id`, remote `channel`, proxy `sid`, and FS
+`channel`/`req`/`id` (all PC-allocated). The receiver keys its tables on the
+sender's id, so both sides can upload/download, attach, browse, and open proxy
+streams simultaneously without clashing.
 
 ### 4.3 ACK — the polymorphic reply
 
@@ -277,9 +295,11 @@ keys are present:
 | Upload finished | `{file_id, ok, path}` | — | `path` = saved location on phone (URI string or absolute path), `""` when rejected/mismatched; PC surfaces `"phone rejected / SHA mismatch"` when `ok:false` and path is empty |
 | Attach finished | `{channel, connection_id, ok:true}` | backlog bytes | backlog = buffered output captured while the connection ran unattached (§6.5) |
 | Detach finished | `{ok:true, channel}` | — | reply to `CONN_DETACH` |
+| FS upload finished | `{fs_id, ok, path?, error?}` | — | final word on a remote-file upload after the phone's SHA-256 verification (§4.11); `path` = remote path on success, `error` on failure (e.g. `"SHA mismatch"`, `"cancelled"`, `"buffer overflow"`) |
 
 Dispatch rule (PC): `"device" in header` → handshake; else `"file_id" in header`
-→ upload result; else `connection_id` + `channel` present → attach result.
+→ upload result; else `"fs_id" in header` → FS upload result; else
+`connection_id` + `channel` present → attach result.
 
 ### 4.4 TEXT (0x01) — bidirectional
 
@@ -455,6 +475,105 @@ reports proxy failures only via `PROXY_OPENED`).
 - PC dispatch: `FILE_WRITE_FAILED` + `id` → fail that upload; `sid` present →
   close that proxy stream; `channel` present → fire `on_remote_error` for that
   channel; otherwise print `[Error] code message` to the status area.
+- The FS family does **not** use `ERROR` in the normal path: every failure is
+  carried in the per-operation result frame (`FS_OPENED` / `FS_LIST_RESULT` /
+  `FS_OP_RESULT` / `FS_DL_RESULT` / `FS_UL_RESULT` / `FS_END` / `ACK {fs_id}`)
+  with a `code` + `message`. The PC treats an `ERROR` carrying an FS channel as
+  a defensive teardown signal only.
+
+### 4.11 FS_* — remote file explorer (SFTP over phone-managed SSH)
+
+The PC browses, uploads to, downloads from, and manages the files of the SSH
+**target server** — not the phone's storage. The phone opens an SFTP channel
+(`ChannelSftp`) on the **already-running hub session** and relays filesystem
+requests over the bridge. SSH credentials, MFA, and host-key trust never appear
+on this wire (they stay on the phone, exactly as in §4.7).
+
+Lifecycle model:
+
+- **`FS_OPEN (0x50)`** — `{channel:int, connection_id:string}`. The phone
+  locates the hub session by `connection_id` (must be `running`) and opens a
+  `ChannelSftp` on it (connect timeout 10 s). Reply:
+  - `FS_OPENED {channel, ok:true}`, or
+  - `FS_OPENED {channel, ok:false, code, message}` with
+    `CONN_NOT_FOUND` / `CONN_NOT_RUNNING` / `FS_BUSY` (another PC channel
+    already has a file browser on that connection, or the channel number is
+    already bound) / `FS_OPEN_FAILED` (SFTP handshake failed — e.g. the
+    server has no `sftp` subsystem).
+- **One FS binding per connection** at a time (`FS_BUSY`), independent of the
+  terminal attach (§4.7): a terminal and a file browser can be attached to the
+  same connection simultaneously — `CONN_BUSY` guards `attach` only, `FS_BUSY`
+  guards `fs` only.
+- **`FS_CLOSE (0x52)`** — one-way, no reply. `{channel:int}` from the PC closes
+  the SFTP channel. The phone sends `{channel, code, reason}` when the hub
+  session dies (SSH exit or profile stop) or the USB session is torn down.
+- The SFTP channel is **binding-lifetime**: it exists only while the PC holds
+  it. A USB disconnect closes it (unlike the SSH shell, which survives); a new
+  `FS_OPEN` after reconnect opens a fresh channel.
+
+**Listing — `FS_LIST (0x53)` → `FS_LIST_RESULT (0x54)`**
+
+- `{channel, req, path}` — `path` is an absolute server path.
+- Reply `{channel, req, ok, path, entries?, truncated?, code?, message?}`:
+  - `entries` = array of `{name, type, size?, mtime?}`, sorted directories
+    first then case-insensitive name; `.`/`..` are filtered out. `type` is the
+    first char of the permission string: `"d"` (dir), `"-"` (file), `"l"`
+    (symlink), `"o"` (other). `size` is omitted for dirs and symlinks;
+    `mtime` (epoch seconds) is omitted when unknown.
+  - **Listing caps.** The header is bounded by the 16-bit `headerLen` field
+    (< 64 KiB), so a listing stops at 400 entries or ~40 KiB of accumulated
+    name bytes and sets `truncated:true`; the PC shows a truncation notice.
+- Failures: `ok:false, code:FS_IO_FAILED` (server-side list error) or
+  `code:FS_BAD_REQUEST` (no open file browser for that channel).
+
+**Management ops** — `FS_MKDIR (0x55)` / `FS_DELETE (0x56)` / `FS_RENAME (0x57)`:
+
+- `{channel, req, path}`; rename adds `path2`. Reply
+  `FS_OP_RESULT {channel, req, op, ok, code?, message?}` with
+  `op` ∈ `"mkdir" | "delete" | "rename"`.
+- Delete uses `lstat`: directories go through `rmdir` (non-empty dirs fail with
+  the server's error in `message`), everything else (including symlinks —
+  removed as links, not followed) through `rm`.
+
+**Download (server → PC)** — `FS_DL_META (0x59)` → `FS_DL_RESULT (0x5A)` → `FS_CHUNK (0x5D)` ×N → `FS_END (0x5E)`:
+
+- PC: `{channel, id, path}` (the local save path was already chosen by the
+  user; it never appears on the wire).
+- Phone: `stat` for the size (follows links, like the stream open) → reply
+  `{channel, id, ok:true, size}` or `{ok:false, code, message}` (`FS_BAD_REQUEST`
+  when > 2 GiB, `FS_IO_FAILED` when the open fails). Then a dedicated phone
+  thread streams `FS_CHUNK {channel, id}` payloads (256 KiB reads) with a
+  running SHA-256, ending with `FS_END {channel, id, ok:true, sha256}`.
+  Failures: `FS_END {channel, id, ok:false, error}`.
+- PC: opens the local file only after the size check, verifies the digest at
+  `FS_END`, deletes the partial on mismatch or `ok:false`.
+- **Cancel — `FS_ABORT (0x5F)`** `{channel, id}`: the phone closes the remote
+  stream (unblocking its reader) and answers `FS_END {ok:false, error:"aborted"}`.
+
+**Upload (PC → server)** — `FS_UL_META (0x5B)` → `FS_UL_RESULT (0x5C)` → `FS_CHUNK` ×N → `FS_END` → `ACK {fs_id}`:
+
+- PC: `{channel, id, path, size}`. Phone: size check (2 GiB), opens the remote
+  sink (`sftp.put`, **overwrite** semantics — the PC UI confirms collisions
+  against the current listing) → `FS_UL_RESULT {channel, id, ok:true}` or
+  `{ok:false, code, message}`.
+- PC streams `FS_CHUNK` payloads (256 KiB, SHA-256 while reading) and finishes
+  with `FS_END {channel, id, ok:true, sha256}`; a cancel sends
+  `FS_END {ok:false}` instead.
+- Phone: chunks are enqueued O(1) from the read loop into a bounded 4 MiB
+  per-upload queue and drained to the remote stream by a serial-executor task;
+  the `FS_END` becomes an **in-queue marker** so finalization can never race
+  ahead of queued chunks. Overflow → the phone deletes the remote partial and
+  answers `ACK {fs_id, ok:false, error:"buffer overflow"}` (that upload only).
+- Completion is the phone's `ACK {fs_id, ok, path?, error?}` (§4.3): the phone
+  verifies the digest and reports `ok:true, path` (remote path), or `ok:false,
+  error` (`"SHA mismatch"` / `"cancelled"` / write failure) after deleting the
+  remote partial.
+
+Concurrency: FS_OPEN/CLOSE/LIST/MKDIR/DELETE/RENAME/DL_META/UL_META run on the
+session's serial `remoteOps` executor (never the bridge read loop); upload
+chunks drain from the bounded queue; each download streams on its own pool
+thread — the same discipline as §4.8. Download chunks compete for the send
+lock with terminal output, exactly like phone→PC file sends (§4.5).
 
 ---
 
@@ -479,6 +598,10 @@ reports proxy failures only via `PROXY_OPENED`).
 | `PROXY_REFUSED` | phone | `PROXY_OPENED.code`: `ConnectException` / other connect failure |
 | `PROXY_HOST_UNREACHABLE` | phone | `PROXY_OPENED.code`: `UnknownHostException` / `NoRouteToHostException` |
 | `PROXY_TIMEOUT` | phone | `PROXY_OPENED.code`: connect timeout (5 s) |
+| `FS_BUSY` | phone | `FS_OPENED.code`: a file browser is already bound to that connection, or the channel number is already bound |
+| `FS_OPEN_FAILED` | phone | `FS_OPENED.code`: SFTP channel open failed (no `sftp` subsystem, session gone) |
+| `FS_BAD_REQUEST` | phone | FS result frames: unknown channel, bad request, duplicate id, transfer > 2 GiB |
+| `FS_IO_FAILED` | phone | FS result frames: remote server-side IO error (list/open/read/write/mkdir/rename/delete) |
 | `UNKNOWN_HOST` | — (reserved) | legacy PC-credential open path; not sent by the current product path |
 | `HOST_KEY_CHANGED` | — (reserved) | host-key MITM alarm; now handled by the phone-side TOFU UI, never on this wire |
 | `AUTH_FAILED` | — (reserved) | SSH auth failure; now surfaces via `CONN_LIST_RESULT.state="error"` / `error` field |
@@ -601,6 +724,56 @@ Local SOCKS5 server behavior (PC, `pc/proxy.py`):
   half-closed); max 128 live streams — excess clients get `REP 0x01`.
 - Phone per-stream: connect timeout 5 s; queue limit 1 MiB; TCP_NODELAY on.
 
+### 6.7 Remote file explorer (SFTP over a phone-managed SSH connection)
+
+```
+PC                                    Phone (ConnectionHub)
+ │ FS_OPEN {channel:9,                 │
+ │   connection_id:"ID_01"} ─────────►│  (must be running; opens ChannelSftp)
+ │◄── FS_OPENED {channel:9, ok:true}   │
+ │ FS_LIST {channel:9, req:1,          │
+ │   path:"/"} ───────────────────────►│  sftp.ls → entries, dirs first
+ │◄── FS_LIST_RESULT {channel:9, req:1,│
+ │      ok:true, path:"/",             │
+ │      entries:[{name:"var",type:"d"},│
+ │               {name:"a.txt",        │
+ │                type:"-",size,mtime}]}│
+ │ FS_DL_META {channel:9, id:2,        │
+ │   path:"/a.txt"} ─────────────────►│  stat → get() stream
+ │◄── FS_DL_RESULT {channel:9, id:2,   │
+ │      ok:true, size}                 │
+ │◄── FS_CHUNK {channel:9, id:2} ×N ───│  stream thread + SHA-256
+ │◄── FS_END {channel:9, id:2,         │
+ │      ok:true, sha256}               │
+ │ FS_UL_META {channel:9, id:3,        │
+ │   path:"/home/u/x.bin", size} ────►│  put() stream (OVERWRITE)
+ │◄── FS_UL_RESULT {channel:9, id:3,   │
+ │      ok:true}                       │
+ │ FS_CHUNK {channel:9, id:3} ×N ────►│  bounded queue → stream
+ │ FS_END {channel:9, id:3,            │
+ │   ok:true, sha256} ───────────────►│  verify → delete partial on mismatch
+ │◄── ACK {fs_id:3, ok:true, path} ────│
+ │ FS_MKDIR {channel:9, req:4,         │
+ │   path:"/home/u/new"} ────────────►│
+ │◄── FS_OP_RESULT {channel:9, req:4,  │
+ │      op:"mkdir", ok:true}           │
+ │ FS_CLOSE {channel:9} ─────────────►│  sftp.disconnect()
+```
+
+Cancellation:
+
+```
+upload cancel:  PC FS_END{id, ok:false} ──► phone deletes remote partial
+                ◄── ACK{fs_id, ok:false, error:"cancelled"}
+download abort: PC FS_ABORT{channel, id} ──► phone closes stream
+                ◄── FS_END{channel, id, ok:false, error:"aborted"}
+profile stop / SSH exit / USB teardown: phone ──► FS_CLOSE{channel, code, reason}
+```
+
+---
+
+## 7. Keepalive and disconnect
+
 ---
 
 ## 7. Keepalive and disconnect
@@ -610,7 +783,7 @@ Local SOCKS5 server behavior (PC, `pc/proxy.py`):
 | PING every | 15 s (starts after seal) | 15 s (starts after HELLO accepted) |
 | PONG reply | immediate | immediate |
 | Liveness check | close if no PONG within 45 s | none (relies on read loop) |
-| Disconnect cleanup | delete partial downloads, close proxy streams + sockets, drop channels, fail pending uploads | delete partial files (FileSink.abort), close proxy sockets, detach hub attachments; **SSH sessions stay running** |
+| Disconnect cleanup | delete partial downloads, close proxy streams + sockets, drop channels, fail pending uploads; FS: delete partial downloads, fail in-flight FS transfers | delete partial files (FileSink.abort), close proxy sockets, detach hub attachments, abort FS transfers, close the SFTP channel; **SSH sessions stay running** |
 | Reconnect | manual; new HELLO (fresh eph key) | same token reused while process lives |
 
 ---
@@ -640,6 +813,11 @@ Local SOCKS5 server behavior (PC, `pc/proxy.py`):
 | SSH backlog ring buffer | 64 KiB | phone `ConnectionHub.RING_MAX` |
 | Terminal geometry | 120 × 30, `TERM=xterm-256color` | `RemoteSession` / `pc/terminal.py` |
 | One session per pc_id | enforced | phone `tryClaimPc` |
+| FS chunk | 256 KiB | both (`FsDownload.CHUNK`, `CHUNK_SIZE`) |
+| FS upload queue | 4 MiB per upload (overflow → that upload fails with `buffer overflow`) | phone `FsUpload.QUEUE_LIMIT` |
+| FS listing caps | 400 entries / 40 KiB of name bytes, `truncated:true` beyond | phone `SessionHandler.fsList` |
+| SFTP channel connect timeout | 10 s | phone `RemoteSession.openSftp` |
+| FS upload meta-accept wait | 15 s (PC gives up and fails the row) | PC `PhoneClient._fs_upload_worker` |
 
 ---
 
@@ -690,6 +868,28 @@ third-party implementation must reproduce them exactly.
     shared connection.
 14. **SOCKS is refused until the link is sealed**, so a browser CONNECT racing
     the handshake cannot leak the destination hostname in cleartext.
+15. **`FS_LIST_RESULT` listings live in the header** (16-bit `headerLen`),
+    so the phone caps them at 400 entries / ~40 KiB of name bytes and sets
+    `truncated:true` — an uncapped listing would overflow the frame.
+16. **FS upload finalization is ordered through the queue.** The phone must
+    not process `FS_END` directly on the read loop: it enqueues an end marker
+    into the same bounded queue the drain consumes, so finalization can never
+    run ahead of chunk writes still in flight. Overflow tears down that
+    upload only (`ACK {fs_id, ok:false, error:"buffer overflow"}`).
+17. **SFTP teardown is channel-scoped.** `ChannelSftp.disconnect()` only —
+    never `RemoteSession.close()`, which would kill the SSH shell channel and
+    the whole session. The SFTP channel is binding-lifetime: USB disconnect
+    closes it, the shell survives.
+18. **`ACK {fs_id}` dispatch order.** The PC must check `"fs_id"` before the
+    `connection_id`+`channel` attach branch, or upload completions misroute to
+    `on_attach_ack`.
+19. **SFTP ops never run on the bridge read loop.** List/ops/open/abort run on
+    the session's serial `remoteOps` executor (an abort's stream close sends an
+    SFTP request); upload chunks drain from a bounded 4 MiB queue; each download
+    streams on its own pool thread. Only the O(1) chunk-enqueue and FS_END
+    marker paths touch the read loop.
+20. **Absolute remote paths only.** The PC normalizes with `posixpath`
+    (remote) vs `os.path` (local); the phone passes paths through to JSch.
 
 ---
 
@@ -708,9 +908,14 @@ third-party implementation must reproduce them exactly.
 | `detach(ch)` / `remote_close(ch)` | `CONN_DETACH {channel}` |
 | `remote_input(ch, bytes)` | `REMOTE_DATA {channel}` + payload |
 | `alloc_proxy(cbs)` + `proxy_send_open` / `proxy_data` / `proxy_close` | `PROXY_OPEN` / `PROXY_DATA` / `PROXY_CLOSE` |
-| callbacks `on_text/on_file_done/on_remote_output/…` | fed from `_on_frame` dispatch |
+| `fs_open(connection_id)` / `fs_close(ch)` | `FS_OPEN` / `FS_CLOSE` |
+| `fs_list(ch, path)` / `fs_mkdir` / `fs_delete` / `fs_rename` | `FS_LIST` / `FS_MKDIR` / `FS_DELETE` / `FS_RENAME` |
+| `fs_download(ch, remote, local)` | `FS_DL_META`; receives `FS_DL_RESULT` / `FS_CHUNK` / `FS_END` |
+| `fs_upload(ch, local, remote)` | worker thread: `FS_UL_META` → `FS_CHUNK`×N → `FS_END{ok, sha256}`; completion via `ACK{fs_id}` |
+| `cancel_fs_upload(fid)` / `fs_abort(fid)` | `FS_END {ok:false}` / `FS_ABORT` |
+| callbacks `on_text/on_file_done/on_fs_done/on_remote_output/…` | fed from `_on_frame` dispatch |
 
-**Android (`BridgeService.kt` / `ConnectionHub.kt` / `ProxySession.kt`)**
+**Android (`BridgeService.kt` / `ConnectionHub.kt` / `ProxySession.kt` / `FsSession.kt`)**
 
 | Entry point | Role |
 |-------------|------|
@@ -719,6 +924,10 @@ third-party implementation must reproduce them exactly.
 | `SessionHandler.handleHello` | token/trust/claim checks → ECDH → ACK → seal → ping loop |
 | `FileSink.create/append/finish/abort` | receive-side file store (SAF or app dir) |
 | `SessionHandler.sendText` / `sendFile` | phone-initiated TEXT/FILE |
+| `SessionHandler.fsList/fsOp/fsDlMeta/fsUlMeta` | SFTP list / mkdir-delete-rename / download open / upload open, on `remoteOps` |
 | `ConnectionHub.snapshot/attach/detach/writeStdin` | `CONN_LIST_RESULT` data, attach bookkeeping, stdin routing |
-| `RemoteSession.openSsh/execSsh` | JSch SSH shell/exec; PTY 120×30; output → ring + `REMOTE_OUTPUT` |
+| `ConnectionHub.openFs/fsByChannel/closeFsChannel/detachFsHandler` | SFTP binding lifecycle (`FS_OPENED` / `FS_CLOSE` sources) |
+| `RemoteSession.openSsh/execSsh/openSftp` | JSch SSH shell/exec/SFTP; PTY 120×30; output → ring + `REMOTE_OUTPUT` |
+| `FsUpload.offer/end/teardown` | bounded upload queue, in-queue `FS_END` marker, ACK finalization |
+| `FsDownload.abort/run` | download stream thread; `FS_CHUNK`/`FS_END` sends |
 | `ProxySession.readLoop/writeLoop/enqueue` | dial-out socket, per-stream relay, half-close handling |

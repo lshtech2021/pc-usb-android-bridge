@@ -1,10 +1,11 @@
 # USB Bridge — Deployment and Usage Guide
 
-The PC client (Python + PyQt5) connects to the phone app (Android foreground service) over a USB cable and does three things:
+The PC client (Python + PyQt5) connects to the phone app (Android foreground service) over a USB cable and does four things:
 
 1. **Bidirectional file transfer** (PC ↔ phone, 256KB chunks + SHA256 verification)
 2. **Bidirectional text messaging**
 3. **Remote SSH via phone-managed connections**: create/start SSH profiles on the phone (secrets stay on the phone); the PC attaches by connection ID (`ID_01`…) to an interactive terminal
+4. **Remote file explorer**: browse the SSH target server's filesystem, upload/download files and manage folders (new folder / rename / delete) over SFTP channels opened by the phone on the same sessions — SSH secrets still never leave the phone
 
 See [prd.md](./prd.md) for design details and [PROTOCOL.md](./PROTOCOL.md) for the
 normative PC ↔ Android protocol specification (frame grammar, message API,
@@ -39,7 +40,8 @@ app-demo-6/
         ├── LinkCrypto.kt          ECDH + AES-GCM (mirrors pc/link_crypto.py)
         ├── BridgeService.kt       Foreground service + USB session + file writing
         ├── FrameIO.kt             Protocol mirror implementation
-        ├── RemoteSession.kt       JSch SSH (+ keyboard-interactive MFA)
+        ├── RemoteSession.kt       JSch SSH (+ keyboard-interactive MFA, SFTP channel)
+        ├── FsSession.kt           Bounded-queue uploads / streamed downloads over SFTP
         └── TofuHostKeys.kt        SSH host fingerprint store (TOFU)
 ```
 
@@ -158,6 +160,21 @@ SSH secrets never leave the phone. Workflow:
 
 USB disconnect does **not** stop phone SSH sessions. PC never receives passwords or private keys.
 
+### Remote Files (Tab 4) — browse the SSH server over SFTP
+
+Browse the **remote server's** filesystem through the phone's SSH connection; uploads/downloads and folder management (new folder, rename, delete) all run over a phone-opened SFTP channel — the PC still never sees SSH credentials. Workflow:
+
+1. On the phone: **SSH Connections** → Start a profile (same as the terminal feature; the connection must show `running`).
+2. On the PC (USB connected): Remote Files → **Refresh list** → select a **running** ID → **Open**.
+3. Navigate: double-click folders, **Up** button, or type an absolute/relative path and press Enter / **Go**. The path bar always shows the current server path; listings are dirs-first.
+4. **Upload…**: choose local files; they land in the current remote folder. If a name already exists there, you are asked to confirm replacing it (SFTP `put` overwrites).
+5. **Download**: select exactly one file → save-as dialog (pre-filled with the remote name; the last used folder is remembered). Downloads are SHA-256 verified; a mismatch deletes the partial file.
+6. **New folder** / **Rename** / **Delete**: selection-driven; delete asks for confirmation (server-side, non-empty folders fail with the server's error in the status bar).
+7. The transfers list below shows one row per upload/download with progress and **Cancel** (upload cancel deletes the remote partial; download cancel deletes the local partial).
+8. **Close** releases the SFTP channel but leaves the phone SSH session running. The file browser and the terminal (Tab 3) can be open on the same connection at the same time.
+
+The SFTP channel lives only while the PC is connected: a USB disconnect closes it (the SSH shell survives). Folders with a very large number of entries may show a truncated listing ("Listing truncated" in the status bar).
+
 ### Disconnecting and Exiting
 
 - Tapping "**Disconnect**" on the PC closes the USB bridge and removes the `adb forward`; half-written files the PC was **receiving** under `./downloads/` are deleted. Phone SSH sessions keep running until you **Stop** them in SSH Connections.
@@ -202,6 +219,11 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 | `PC_KEY_CHANGED` | Saved PC fingerprint’s pubkey changed — Forget that PC on the phone and re-approve |
 | `CONN_NOT_RUNNING` / `CONN_BUSY` | Start the connection on the phone first; only one PC attach per ID |
 | `AUTH_FAILED` | Wrong username/password/private key or MFA code on the phone |
+| `FS_OPEN_FAILED` | The server has no `sftp` subsystem (very old/limited sshd), or the phone session died mid-open; check the server, then re-open |
+| `FS_BUSY` | A file browser is already open for that connection (one at a time per ID), or a stale channel is bound — Close and re-open |
+| `FS_IO_FAILED` on list/ops | Bad path, no permission on the server, or a non-empty folder on delete; the server's message shows in the status bar |
+| `FS_BAD_REQUEST` | Op sent while no file browser is open (re-open), or a transfer exceeds the 2 GB limit |
+| `buffer overflow` upload failure | The server is too slow for the USB link; retry the upload, or upload smaller files |
 | Host trust dialog on phone | First connection to that host; verify the fingerprint, then Trust |
 | `HOST_KEY_CHANGED` | Host key differs from the trusted one — verify the new fingerprint, then **Forget & re-trust** on the dialog, or **Forget host key** / **Clear all host keys** in SSH Connections. After upgrading to ed25519-preferred host keys, **Forget** the old entry and Trust again so the fingerprint matches `ssh -vvv` (`ssh-ed25519 SHA256:…`) |
 | `Algorithm negotiation fail` | Rare with mwiede JSch + Bouncy Castle; ensure the phone can reach the host |
@@ -219,6 +241,8 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 - One PC attach per running connection ID; profiles are not synced to the PC.
 - No resume-after-interruption, no parallel multi-device support, no directory browsing; the PC connects to only one device at a time.
 - Within a connection, file transfer and text share one TCP stream, so text lags while a large file is in flight.
+- Remote Files: the SFTP channel lives only while the PC is connected — a USB disconnect closes it (the SSH shell survives); re-open after reconnecting. Very large directories may show a truncated listing (a status-bar notice appears).
+- Remote Files: an active download shares the bridge's send path with terminal output, so the terminal may stutter during a fast download (same limitation as phone→PC file sends). Uploads overwrite existing remote files — the PC confirms before replacing.
 - An adb environment is required (an adb-free approach would need root or a custom ROM).
 
 ### Smoke checklist (link crypto + SSH hub)
@@ -231,5 +255,12 @@ USB disconnect does **not** stop phone SSH sessions. PC never receives passwords
 6. Detach → session still running → Attach again (backlog may replay).
 7. Unplug USB → phone SSH still running → reconnect → Attach again.
 8. Phone: Stop `ID_01` → cannot attach until Start again.
+
+### Smoke checklist (remote file explorer)
+
+9. Remote Files → Refresh → Open a running ID → root listing, dirs first; navigate by double-click / Up / path edit.
+10. Terminal + Remote Files on the **same** ID at once → both stay responsive; `sha256sum` a downloaded file in the terminal to verify it end-to-end.
+11. Upload a file (collision → replace confirm); cancel a large upload mid-flight → row failed, remote file absent; download + save-as → hash matches; abort a large download → local partial deleted.
+12. New folder / Rename / Delete (incl. non-empty folder → status-bar error); USB unplug mid-transfer → rows fail cleanly, re-open works; Stop the profile on the phone → Remote Files shows "browser closed" and resets.
 
 See [prd.md](./prd.md) §7 and §8 for more extensibility points and security boundaries.

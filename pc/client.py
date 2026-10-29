@@ -39,7 +39,20 @@ class PhoneClient:
         self.on_remote_error = None    # fn(channel, code, header)
         self.on_conn_list = None       # fn(list[dict])
         self.on_attach_ack = None      # fn(header, backlog_bytes)
+        self.on_fs_opened = None       # fn(header)
+        self.on_fs_closed = None       # fn(channel, code, reason)
+        self.on_fs_list = None         # fn(header)
+        self.on_fs_op_result = None    # fn(header)
+        self.on_fs_progress = None     # fn(id, name, sent, total, direction)
+        self.on_fs_done = None         # fn(id, name, ok, direction, path)
+        self.on_fs_error = None        # fn(channel, code, header)   (defensive only)
         self._recv, self.channels = {}, {}
+        # Remote file explorer (feature 4): SFTP over the phone's SSH sessions.
+        self._fs_pending = {}          # channel -> {"connection_id"}  (FS_OPEN sent, awaiting FS_OPENED)
+        self._fs = {}                  # channel -> {"connection_id"}  (after FS_OPENED ok)
+        self._fs_recv = {}             # id -> {"channel","name","path","fp","sha","got","size"}
+        self._fs_up = {}               # id -> {"channel","name","remote_path","evt","meta_ok","err"}
+        self._fs_cancel = set()        # upload ids the user asked to abort
         # Reverse tethering (SOCKS5): sid -> {"opened","data","close"} callbacks. Streams are
         # always PC-initiated, so the PC owns the sid space for them.
         self._proxy = {}
@@ -128,6 +141,28 @@ class PhoneClient:
             self.on_file_done and self.on_file_done(fid, st["name"], False, "up", "disconnected")
         self._pending_up.clear()
         self._cancel_up.clear()
+        # Remote file explorer: delete half-written downloads, fail in-flight uploads.
+        for fid, st in list(self._fs_recv.items()):
+            if st["fp"]:
+                try:
+                    st["fp"].close()
+                except Exception:
+                    pass
+            try:
+                if os.path.exists(st["path"]):
+                    os.remove(st["path"])
+            except Exception:
+                pass
+            self.on_fs_done and self.on_fs_done(fid, st["name"], False, "down", "disconnected")
+        self._fs_recv.clear()
+        for fid, st in list(self._fs_up.items()):
+            if st["meta_ok"]:
+                self.on_fs_done and self.on_fs_done(fid, st["name"], False, "up", "disconnected")
+            st["evt"].set()                # unblock workers waiting on the meta accept
+        self._fs_up.clear()
+        self._fs_cancel.clear()
+        self._fs.clear()
+        self._fs_pending.clear()
 
     def _on_disconnect(self):
         self._cleanup_partial()
@@ -268,6 +303,181 @@ class PhoneClient:
         except Exception:
             pass
 
+    # ---------- Feature 4: remote file explorer (SFTP over phone-managed SSH) ----------
+    def fs_open(self, connection_id: str) -> int:
+        ch = self._new_id()
+        # Register before send: FS_OPENED can arrive on the recv thread instantly.
+        self._fs_pending[ch] = {"connection_id": connection_id}
+        self.tp.send(MsgType.FS_OPEN, {"channel": ch, "connection_id": connection_id})
+        return ch
+
+    def fs_close(self, ch: int):
+        if ch in self._fs or ch in self._fs_pending:
+            self.tp.send(MsgType.FS_CLOSE, {"channel": ch})
+        self._fs.pop(ch, None)
+        self._fs_pending.pop(ch, None)
+
+    def fs_list(self, ch: int, path: str) -> int:
+        req = self._new_id()
+        self.tp.send(MsgType.FS_LIST, {"channel": ch, "req": req, "path": path})
+        return req
+
+    def fs_mkdir(self, ch: int, path: str) -> int:
+        req = self._new_id()
+        self.tp.send(MsgType.FS_MKDIR, {"channel": ch, "req": req, "path": path})
+        return req
+
+    def fs_delete(self, ch: int, path: str) -> int:
+        req = self._new_id()
+        self.tp.send(MsgType.FS_DELETE, {"channel": ch, "req": req, "path": path})
+        return req
+
+    def fs_rename(self, ch: int, path: str, path2: str) -> int:
+        req = self._new_id()
+        self.tp.send(MsgType.FS_RENAME, {"channel": ch, "req": req, "path": path, "path2": path2})
+        return req
+
+    def fs_download(self, ch: int, remote_path: str, local_path: str) -> int:
+        """Download a remote file to local_path (resolved by the UI's save-as dialog).
+        The local file is opened only when FS_DL_RESULT arrives, after the size check."""
+        fid = self._new_id()
+        self._fs_recv[fid] = {"channel": ch, "name": os.path.basename(remote_path),
+                              "path": local_path, "fp": None, "sha": None, "got": 0, "size": 0}
+        self.tp.send(MsgType.FS_DL_META, {"channel": ch, "id": fid, "path": remote_path})
+        return fid
+
+    def fs_upload(self, ch: int, local_path: str, remote_path: str) -> int:
+        fid = self._new_id()
+        threading.Thread(target=self._fs_upload_worker,
+                         args=(fid, ch, local_path, remote_path), daemon=True).start()
+        return fid
+
+    def cancel_fs_upload(self, fid: int):
+        """Abort an in-flight upload; the chunk loop tells the phone to delete its partial."""
+        if fid in self._fs_up:
+            self._fs_cancel.add(fid)
+
+    def fs_abort(self, fid: int):
+        """Cancel an in-flight download; the phone stops reading and reports ok:false."""
+        st = self._fs_recv.get(fid)
+        if st:
+            self.tp.send(MsgType.FS_ABORT, {"channel": st["channel"], "id": fid})
+
+    def _fs_upload_worker(self, fid, ch, local_path, remote_path):
+        name = os.path.basename(local_path)
+        try:
+            size = os.path.getsize(local_path)
+        except OSError as e:
+            self.on_fs_done and self.on_fs_done(fid, name, False, "up", str(e))
+            return
+        if size > MAX_FILE_SIZE:
+            self.on_fs_done and self.on_fs_done(fid, name, False, "up", "file exceeds 2GB limit")
+            return
+        evt = threading.Event()
+        self._fs_up[fid] = {"channel": ch, "name": name, "remote_path": remote_path,
+                            "evt": evt, "meta_ok": False, "err": ""}
+        try:
+            self.tp.send(MsgType.FS_UL_META, {"channel": ch, "id": fid,
+                                              "path": remote_path, "size": size})
+            if not evt.wait(15.0):
+                raise TimeoutError("phone did not accept the upload")
+            if not self._fs_up[fid]["meta_ok"]:
+                raise RuntimeError(self._fs_up[fid].get("err") or "phone rejected the upload")
+            sha = hashlib.sha256()
+            sent = 0
+            with open(local_path, "rb") as f:
+                while chunk := f.read(CHUNK_SIZE):
+                    if fid in self._fs_cancel:
+                        # ok:false makes the phone delete its partial remote file.
+                        self.tp.send(MsgType.FS_END, {"channel": ch, "id": fid, "ok": False})
+                        raise RuntimeError("cancelled")
+                    sha.update(chunk)
+                    self.tp.send(MsgType.FS_CHUNK, {"channel": ch, "id": fid}, chunk)
+                    sent += len(chunk)
+                    self.on_fs_progress and self.on_fs_progress(fid, name, sent, size, "up")
+            self.tp.send(MsgType.FS_END, {"channel": ch, "id": fid, "ok": True,
+                                          "sha256": sha.hexdigest()})
+            # Done/Failed arrives as ACK{fs_id} -> on_fs_done
+        except Exception as e:
+            self._fs_cancel.discard(fid)
+            st = self._fs_up.get(fid)
+            if st is None or (st["evt"].is_set() and st["meta_ok"]):
+                return                       # finalized via ACK{fs_id} or a teardown path
+            self._fs_up.pop(fid, None)
+            self.on_fs_done and self.on_fs_done(fid, name, False, "up", str(e))
+
+    # ---------- Feature 4 receive handlers (download state, channel close) ----------
+    def _on_fs_dl_result(self, h):
+        st = self._fs_recv.get(h["id"])
+        if not st:
+            return
+        if not bool(h.get("ok")):
+            self._fs_recv.pop(h["id"], None)
+            self.on_fs_done and self.on_fs_done(
+                h["id"], st["name"], False, "down",
+                h.get("message") or h.get("code") or "")
+            return
+        size = h.get("size", 0) or 0
+        if size > MAX_FILE_SIZE:                     # phone already aborted; clean up locally
+            self._fs_recv.pop(h["id"], None)
+            self.tp.send(MsgType.FS_ABORT, {"channel": st["channel"], "id": h["id"]})
+            self.on_fs_done and self.on_fs_done(
+                h["id"], st["name"], False, "down", "file exceeds 2GB limit")
+            return
+        st["size"] = size
+        try:
+            st["fp"] = open(st["path"], "wb")        # save-as path resolved by the UI beforehand
+            st["sha"] = hashlib.sha256()
+        except OSError as e:
+            self._fs_recv.pop(h["id"], None)
+            self.tp.send(MsgType.FS_ABORT, {"channel": st["channel"], "id": h["id"]})
+            self.on_fs_done and self.on_fs_done(h["id"], st["name"], False, "down", str(e))
+            return
+        self.on_fs_progress and self.on_fs_progress(h["id"], st["name"], 0, size, "down")
+
+    def _on_fs_end(self, h):
+        st = self._fs_recv.pop(h["id"], None)
+        if not st or not st["fp"]:
+            return
+        st["fp"].close()
+        ok = bool(h.get("ok")) and (not h.get("sha256") or h["sha256"] == st["sha"].hexdigest())
+        if not ok:
+            try:
+                os.remove(st["path"])
+            except OSError:
+                pass
+        self.on_fs_done and self.on_fs_done(
+            h["id"], st["name"], ok, "down",
+            st["path"] if ok else (h.get("error") or ""))
+
+    def _on_fs_close(self, h):
+        ch = h.get("channel")
+        self._fs.pop(ch, None)
+        self._fs_pending.pop(ch, None)
+        for fid, st in list(self._fs_recv.items()):  # in-flight downloads die with the channel
+            if st["channel"] == ch:
+                self._fs_recv.pop(fid, None)
+                if st["fp"]:
+                    try:
+                        st["fp"].close()
+                    except OSError:
+                        pass
+                    try:
+                        os.remove(st["path"])
+                    except OSError:
+                        pass
+                self.on_fs_done and self.on_fs_done(fid, st["name"], False, "down", "session closed")
+        for fid, st in list(self._fs_up.items()):    # streaming uploads: their ACK will never come
+            if st["channel"] == ch:
+                self._fs_up.pop(fid, None)
+                self._fs_cancel.discard(fid)
+                if st["evt"].is_set():               # was streaming
+                    self.on_fs_done and self.on_fs_done(fid, st["name"], False, "up", "session closed")
+                else:                                # waiting on meta: let the worker fail itself
+                    st["err"] = "session closed"
+                    st["evt"].set()
+        self.on_fs_closed and self.on_fs_closed(ch, h.get("code", 0), h.get("reason", ""))
+
     # ---------- Message dispatch ----------
     def _on_frame(self, t, h, p):
         M = MsgType
@@ -308,6 +518,14 @@ class PhoneClient:
                         path = h.get("path", "") if ok else h.get("path", "") or ""
                         tip = path if ok else (path or "phone rejected / SHA mismatch")
                         self.on_file_done and self.on_file_done(fid, st["name"], ok, "up", tip)
+                elif "fs_id" in h:                       # FS upload completion (new ACK context)
+                    fid = h["fs_id"]
+                    st = self._fs_up.pop(fid, None)
+                    if st:
+                        ok = bool(h.get("ok"))
+                        tip = (h.get("path", "") or "") if ok else \
+                            (h.get("error") or "phone rejected / SHA mismatch")
+                        self.on_fs_done and self.on_fs_done(fid, st["name"], ok, "up", tip)
                 elif h.get("connection_id") is not None and "channel" in h:
                     self.on_attach_ack and self.on_attach_ack(h, p or b"")
             elif t == M.FILE_META:
@@ -347,6 +565,38 @@ class PhoneClient:
                     if d == "both":
                         self._proxy.pop(sid, None)
                     cb["close"](sid, d, h.get("code", 0), h.get("reason", ""))
+            elif t == M.FS_OPENED:
+                ch = h.get("channel")
+                pend = self._fs_pending.pop(ch, None)
+                if bool(h.get("ok")) and pend:
+                    self._fs[ch] = {"connection_id": pend["connection_id"]}
+                self.on_fs_opened and self.on_fs_opened(h)
+            elif t == M.FS_CLOSE:
+                self._on_fs_close(h)
+            elif t == M.FS_LIST_RESULT:
+                self.on_fs_list and self.on_fs_list(h)
+            elif t == M.FS_OP_RESULT:
+                self.on_fs_op_result and self.on_fs_op_result(h)
+            elif t == M.FS_DL_RESULT:
+                self._on_fs_dl_result(h)
+            elif t == M.FS_UL_RESULT:
+                st = self._fs_up.get(h["id"])
+                if st:
+                    if bool(h.get("ok")):
+                        st["meta_ok"] = True
+                    else:
+                        st["err"] = h.get("message") or h.get("code") or "phone rejected"
+                    st["evt"].set()
+            elif t == M.FS_CHUNK:
+                st = self._fs_recv.get(h["id"])
+                if st and st["fp"] and h.get("channel") == st["channel"]:
+                    st["fp"].write(p)
+                    st["sha"].update(p)
+                    st["got"] += len(p)
+                    self.on_fs_progress and self.on_fs_progress(
+                        h["id"], st["name"], st["got"], st["size"], "down")
+            elif t == M.FS_END:
+                self._on_fs_end(h)
             elif t == M.PING:
                 self.tp.send(M.PONG, {})
             elif t == M.PONG:
@@ -361,6 +611,9 @@ class PhoneClient:
                     sid = h["sid"]
                     cb = self._proxy.pop(sid)
                     cb["close"](sid, "both", code, h.get("message", "") or code)
+                elif "channel" in h and h.get("channel") in self._fs and self.on_fs_error:
+                    # Defensive only: the phone reports FS failures via result frames.
+                    self.on_fs_error(h["channel"], code, h)
                 elif "channel" in h and self.on_remote_error:
                     self.on_remote_error(h["channel"], code, h)
                 else:

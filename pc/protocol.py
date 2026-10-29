@@ -19,6 +19,12 @@ class MsgType:
     ACK, ERROR = 0x20, 0x21
     PING, PONG = 0x30, 0x31
     PROXY_OPEN, PROXY_OPENED, PROXY_DATA, PROXY_CLOSE = 0x40, 0x41, 0x42, 0x43
+    FS_OPEN, FS_OPENED, FS_CLOSE = 0x50, 0x51, 0x52
+    FS_LIST, FS_LIST_RESULT = 0x53, 0x54
+    FS_MKDIR, FS_DELETE, FS_RENAME, FS_OP_RESULT = 0x55, 0x56, 0x57, 0x58
+    FS_DL_META, FS_DL_RESULT = 0x59, 0x5A
+    FS_UL_META, FS_UL_RESULT = 0x5B, 0x5C
+    FS_CHUNK, FS_END, FS_ABORT = 0x5D, 0x5E, 0x5F
 
 
 class ErrCode:
@@ -41,6 +47,10 @@ class ErrCode:
     PROXY_TIMEOUT = "PROXY_TIMEOUT"
     PROXY_BAD_REQUEST = "PROXY_BAD_REQUEST"
     PROXY_LIMIT = "PROXY_LIMIT"
+    FS_BUSY = "FS_BUSY"
+    FS_OPEN_FAILED = "FS_OPEN_FAILED"
+    FS_BAD_REQUEST = "FS_BAD_REQUEST"
+    FS_IO_FAILED = "FS_IO_FAILED"
 
 
 def encode_frame(msg_type: int, header: dict, payload: bytes = b"", seal=None) -> bytes:

@@ -1,15 +1,17 @@
-"""PyQt5 UI: three tabs (messages / files / remote terminal attach-by-ID).
+"""PyQt5 UI: four tabs (messages / files / remote terminal / remote files).
 
 Run: py ui.py
 """
+import posixpath
 import sys
+from datetime import datetime
 
 from PyQt5.QtCore import QTimer, pyqtSignal, Qt
 from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QMainWindow,
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
     QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
-    QInputDialog, QTableWidgetItem)
+    QInputDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 
 import settings
 import theme
@@ -33,6 +35,13 @@ TERMINAL_STATES = {
     "attaching": ("dot_connecting", "Attaching…"),
     "attached": ("dot_connected", "Attached"),
     "error": ("dot_error", "Attach failed"),
+}
+
+FS_STATES = {
+    "detached": ("dot_disconnected", "Not browsing"),
+    "opening": ("dot_connecting", "Opening…"),
+    "attached": ("dot_connected", "Browsing"),
+    "error": ("dot_error", "Open failed"),
 }
 
 # Reverse tethering (SOCKS5) listener states. "listening" means up but the bridge is down.
@@ -72,6 +81,15 @@ def state_dot_icon(color_key: str) -> QIcon:
     painter.end()
     return QIcon(pm)
 
+
+def _fmt_size(n) -> str:
+    n = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{int(n)} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+
+
 PC_PORT, PHONE_PORT = 12580, 9999
 
 
@@ -87,6 +105,12 @@ class MainWindow(QMainWindow):
     sig_clist = pyqtSignal(object)
     sig_attach = pyqtSignal(object, object)
     sig_proxy_state = pyqtSignal(str, str)
+    sig_fs_opened = pyqtSignal(object)
+    sig_fs_closed = pyqtSignal(object, int, str)
+    sig_fs_list = pyqtSignal(object)
+    sig_fs_op = pyqtSignal(object)
+    sig_fs_prog = pyqtSignal(object, str, int, int, str)
+    sig_fs_done = pyqtSignal(object, str, bool, str, str)
 
     def __init__(self):
         super().__init__()
@@ -100,6 +124,10 @@ class MainWindow(QMainWindow):
         self._fullscreen = False
         self._proxy_state = "off"
         self._proxy_detail = ""
+        self.fs_ch = None        # remote file explorer channel (independent of self.ch)
+        self.fs_path = "/"
+        self._fs_rows = {}
+        self._fs_entries = []
         c = self.client
         c.on_text = self.sig_text.emit
         c.on_status = self.sig_status.emit
@@ -111,6 +139,12 @@ class MainWindow(QMainWindow):
         c.on_remote_error = lambda *a: self.sig_rerr.emit(*a)
         c.on_conn_list = self.sig_clist.emit
         c.on_attach_ack = lambda h, p: self.sig_attach.emit(h, p)
+        c.on_fs_opened = self.sig_fs_opened.emit
+        c.on_fs_closed = lambda *a: self.sig_fs_closed.emit(*a)
+        c.on_fs_list = self.sig_fs_list.emit
+        c.on_fs_op_result = self.sig_fs_op.emit
+        c.on_fs_progress = lambda *a: self.sig_fs_prog.emit(*a)
+        c.on_fs_done = lambda *a: self.sig_fs_done.emit(*a)
         # Connect the proxy state signal before the listener exists so an early emit is queued.
         self.sig_proxy_state.connect(self._on_proxy_state)
         for s, slot in ((self.sig_text, self._on_text), (self.sig_status, self._on_status),
@@ -118,7 +152,13 @@ class MainWindow(QMainWindow):
                         (self.sig_fprog, self._on_fprog), (self.sig_fdone, self._on_fdone),
                         (self.sig_rout, self._on_rout), (self.sig_rclose, self._on_rclose),
                         (self.sig_rerr, self._on_rerr),
-                        (self.sig_clist, self._on_clist), (self.sig_attach, self._on_attach)):
+                        (self.sig_clist, self._on_clist), (self.sig_attach, self._on_attach),
+                        (self.sig_fs_opened, self._on_fs_opened),
+                        (self.sig_fs_closed, self._on_fs_closed),
+                        (self.sig_fs_list, self._on_fs_list),
+                        (self.sig_fs_op, self._on_fs_op),
+                        (self.sig_fs_prog, self._on_fs_prog),
+                        (self.sig_fs_done, self._on_fs_done)):
             s.connect(slot)
         self.socks = SocksProxyServer(
             lambda: self.client, port=self._saved_proxy_port(),
@@ -141,6 +181,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._msg_tab(), "Messages")
         self.tabs.addTab(self._file_tab(), "Files")
         self.tabs.addTab(self._term_tab(), "Remote Terminal")
+        self.tabs.addTab(self._fs_tab(), "Remote Files")
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.strip = self._build_strip()
@@ -251,14 +292,16 @@ class MainWindow(QMainWindow):
         self.chip.apply()
         self.proxy_pill.apply()
         self.term_pill.apply()
+        self.fs_pill.apply()
         self.dlg.apply_theme()
         self.ftab.apply_theme()
         self.term.apply_theme()
-        for i in range(self.cmb_conn.count()):
-            state = self.cmb_conn.itemData(i, Qt.UserRole + 1)
-            if state:
-                self.cmb_conn.setItemIcon(i, state_dot_icon(CONNECTION_DOT.get(
-                    state, "dot_disconnected")))
+        for combo in (self.cmb_conn, self.cmb_fs_conn):
+            for i in range(combo.count()):
+                state = combo.itemData(i, Qt.UserRole + 1)
+                if state:
+                    combo.setItemIcon(i, state_dot_icon(CONNECTION_DOT.get(
+                        state, "dot_disconnected")))
         if self.act_dark.isChecked() != (theme.palette_name() == "dark"):
             self.act_dark.setChecked(theme.palette_name() == "dark")
         for name, act in self._term_actions.items():
@@ -273,6 +316,9 @@ class MainWindow(QMainWindow):
         if index == 2:
             self._status("Copy: Ctrl+Shift+C · Paste: Ctrl+Shift+V · "
                          "Zoom: Ctrl+= / Ctrl+- / Ctrl+0")
+        elif index == 3:
+            self._status("Double-click a folder to open · Upload… sends to the current "
+                         "folder · Download saves the selected file to this PC")
         else:
             self._status("")
 
@@ -335,6 +381,12 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self.ch = None
+        if self.fs_ch is not None:
+            try:
+                self.client.fs_close(self.fs_ch)
+            except Exception:
+                pass
+        self._reset_fs()
         self.client.close()
         super().closeEvent(event)
 
@@ -533,18 +585,23 @@ class MainWindow(QMainWindow):
         if "[connection closed]" in low:
             self._set_conn_state("disconnected")
             self._reset_attach()
+            self._reset_fs()
         elif "bad_token" in low:
             self._set_conn_state("error", "wrong token")
             self._reset_attach()
+            self._reset_fs()
         elif "pc_rejected" in low:
             self._set_conn_state("error", "rejected on phone")
             self._reset_attach()
+            self._reset_fs()
         elif "pc_already_connected" in low:
             self._set_conn_state("error", "already connected")
             self._reset_attach()
+            self._reset_fs()
         elif "pc_key_changed" in low:
             self._set_conn_state("error", "PC key changed")
             self._reset_attach()
+            self._reset_fs()
         elif "adb unavailable" in low:
             self._set_conn_state("error", "adb unavailable")
         if "error" in low or "bad_token" in low or "rejected" in low or "unavailable" in low:
@@ -744,28 +801,32 @@ class MainWindow(QMainWindow):
             return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
         self.client.list_connections()
 
-    def _on_clist(self, connections):
-        self._conn_items = list(connections or [])
-        cur = self.cmb_conn.currentData()
-        self.cmb_conn.clear()
-        for c in self._conn_items:
+    def _fill_conn_combo(self, combo, connections, verb="attached"):
+        cur = combo.currentData()
+        combo.clear()
+        for c in connections:
             cid = c.get("id", "?")
             state = c.get("state", "?")
             label = (f"{cid}  {c.get('name', '')}  "
                      f"{c.get('user', '')}@{c.get('host', '')}  · {state}")
-            self.cmb_conn.addItem(
+            combo.addItem(
                 state_dot_icon(CONNECTION_DOT.get(state, "dot_disconnected")), label, cid)
             # Remember the raw state so a palette change can redraw the dot.
-            self.cmb_conn.setItemData(self.cmb_conn.count() - 1, state, Qt.UserRole + 1)
+            combo.setItemData(combo.count() - 1, state, Qt.UserRole + 1)
             if state != "running":
-                self.cmb_conn.setItemData(
-                    self.cmb_conn.count() - 1,
-                    "Only a running connection can be attached — start it on the phone",
+                combo.setItemData(
+                    combo.count() - 1,
+                    f"Only a running connection can be {verb} — start it on the phone",
                     Qt.ToolTipRole)
         if cur:
-            i = self.cmb_conn.findData(cur)
+            i = combo.findData(cur)
             if i >= 0:
-                self.cmb_conn.setCurrentIndex(i)
+                combo.setCurrentIndex(i)
+
+    def _on_clist(self, connections):
+        self._conn_items = list(connections or [])
+        self._fill_conn_combo(self.cmb_conn, self._conn_items)
+        self._fill_conn_combo(self.cmb_fs_conn, self._conn_items, verb="opened")
 
     def attach_conn(self):
         if not (self.client.tp and self.client.tp.alive):
@@ -825,6 +886,336 @@ class MainWindow(QMainWindow):
                 self.ch = None
         self.msg_log.add_notice(f"Remote error {code}: {msg}")
 
+    # ---- Tab4 Remote files (SFTP over the phone's SSH connections) ----
+    def _fs_tab(self):
+        w = QWidget(); v = QVBoxLayout(w)
+        v.setContentsMargins(theme.SPACE_M, theme.SPACE_M, theme.SPACE_M, theme.SPACE_M)
+        v.setSpacing(theme.SPACE_S)
+        h = QHBoxLayout()
+        h.setSpacing(theme.SPACE_S)
+        self.cmb_fs_conn = QComboBox()
+        self.cmb_fs_conn.setMinimumWidth(320)
+        self.cmb_fs_conn.setToolTip("SSH profiles on the phone; the dot shows whether it is running")
+        self.btn_fs_refresh = QPushButton("Refresh list")
+        self.btn_fs_refresh.setToolTip("Ask the phone for its connection list (Ctrl+R)")
+        self.btn_fs_refresh.clicked.connect(self.refresh_connections)
+        self.btn_fs_open = QPushButton("Open")
+        self.btn_fs_open.setProperty("variant", "primary")
+        self.btn_fs_open.setToolTip("Browse the selected connection's files over SFTP")
+        self.btn_fs_open.clicked.connect(self.fs_open_conn)
+        self.btn_fs_close = QPushButton("Close")
+        self.btn_fs_close.setToolTip("Close the file browser (the phone SSH session keeps running)")
+        self.btn_fs_close.clicked.connect(self.fs_close_conn)
+        h.addWidget(theme.field_label("Connection"))
+        h.addWidget(self.cmb_fs_conn, 1)
+        h.addWidget(self.btn_fs_refresh)
+        h.addWidget(self.btn_fs_open)
+        h.addWidget(self.btn_fs_close)
+        v.addLayout(h)
+
+        self.fs_pill = theme.StatePill(FS_STATES, "detached")
+        v.addWidget(self.fs_pill, 0, Qt.AlignLeft)
+
+        p = QHBoxLayout()
+        p.setSpacing(theme.SPACE_S)
+        self.ed_fs_path = QLineEdit()
+        self.ed_fs_path.setPlaceholderText("/")
+        self.ed_fs_path.setToolTip("Remote path on the server; Enter or Go opens it")
+        self.ed_fs_path.returnPressed.connect(
+            lambda: self.fs_navigate(self.ed_fs_path.text()))
+        self.btn_fs_up = QPushButton("Up")
+        self.btn_fs_up.setToolTip("Open the parent folder")
+        self.btn_fs_up.clicked.connect(self.fs_go_up)
+        self.btn_fs_go = QPushButton("Go")
+        self.btn_fs_go.clicked.connect(lambda: self.fs_navigate(self.ed_fs_path.text()))
+        p.addWidget(theme.field_label("Path"))
+        p.addWidget(self.ed_fs_path, 1)
+        p.addWidget(self.btn_fs_up)
+        p.addWidget(self.btn_fs_go)
+        v.addLayout(p)
+
+        a = QHBoxLayout()
+        a.setSpacing(theme.SPACE_S)
+        self.btn_fs_upload = QPushButton("Upload…")
+        self.btn_fs_upload.setProperty("variant", "primary")
+        self.btn_fs_upload.setToolTip("Send local files to the current folder on the server")
+        self.btn_fs_upload.clicked.connect(self.fs_upload_dialog)
+        self.btn_fs_download = QPushButton("Download")
+        self.btn_fs_download.setToolTip("Save the selected file to this PC")
+        self.btn_fs_download.clicked.connect(self.fs_download_selected)
+        self.btn_fs_mkdir = QPushButton("New folder")
+        self.btn_fs_mkdir.setToolTip("Create a folder in the current remote folder")
+        self.btn_fs_mkdir.clicked.connect(self.fs_mkdir_dialog)
+        self.btn_fs_rename = QPushButton("Rename")
+        self.btn_fs_rename.setToolTip("Rename the selected item on the server")
+        self.btn_fs_rename.clicked.connect(self.fs_rename_dialog)
+        self.btn_fs_delete = QPushButton("Delete")
+        self.btn_fs_delete.setProperty("variant", "subtle")
+        self.btn_fs_delete.setToolTip("Delete the selected items on the server")
+        self.btn_fs_delete.clicked.connect(self.fs_delete_selected)
+        a.addWidget(self.btn_fs_upload)
+        a.addWidget(self.btn_fs_download)
+        a.addWidget(self.btn_fs_mkdir)
+        a.addWidget(self.btn_fs_rename)
+        a.addWidget(self.btn_fs_delete)
+        a.addStretch(1)
+        v.addLayout(a)
+
+        self.fs_table = QTableWidget(0, 3)
+        self.fs_table.setHorizontalHeaderLabels(["Name", "Size", "Modified"])
+        self.fs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.fs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.fs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.fs_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.fs_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        self.fs_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.fs_table.setShowGrid(False)
+        self.fs_table.setToolTip("Double-click a folder to open it; select files to download")
+        self.fs_table.itemDoubleClicked.connect(self._fs_row_activated)
+        v.addWidget(self.fs_table, 1)
+
+        v.addWidget(theme.caption("Transfers"))
+        self.fs_xfer = QTableWidget(0, 5)
+        self.fs_xfer.setHorizontalHeaderLabels(
+            ["File", "Direction", "Progress", "Status", "Action"])
+        self.fs_xfer.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 5):
+            self.fs_xfer.horizontalHeader().setSectionResizeMode(
+                col, QHeaderView.ResizeToContents)
+        self.fs_xfer.setSelectionMode(QTableWidget.NoSelection)
+        self.fs_xfer.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.fs_xfer.setShowGrid(False)
+        self.fs_xfer.setMaximumHeight(180)
+        v.addWidget(self.fs_xfer)
+        self._set_fs_state("detached", "pick a running connection, then Open")
+        return w
+
+    def _set_fs_state(self, state: str, detail: str = ""):
+        self.fs_pill.set_state(state, detail)
+        attached = state == "attached"
+        opening = state == "opening"
+        self.btn_fs_open.setEnabled(not attached and not opening)
+        self.btn_fs_close.setEnabled(attached or opening)
+        for b in (self.btn_fs_upload, self.btn_fs_download, self.btn_fs_mkdir,
+                  self.btn_fs_rename, self.btn_fs_delete, self.btn_fs_up, self.btn_fs_go):
+            b.setEnabled(attached)
+
+    def fs_open_conn(self):
+        if not (self.client.tp and self.client.tp.alive):
+            return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
+        cid = self.cmb_fs_conn.currentData()
+        if not cid:
+            return QMessageBox.warning(self, "Notice", "No connection selected")
+        self._set_fs_state("opening", str(cid))
+        self.fs_ch = self.client.fs_open(cid)
+
+    def fs_close_conn(self):
+        if self.fs_ch is not None:
+            try:
+                self.client.fs_close(self.fs_ch)
+            except Exception:
+                pass
+        self._reset_fs()
+
+    def _reset_fs(self):
+        self.fs_ch = None
+        self.fs_path = "/"
+        self.ed_fs_path.setText("")
+        self.fs_table.setRowCount(0)
+        self._fs_entries = []
+        self._set_fs_state("detached", "pick a running connection, then Open")
+
+    def _on_fs_opened(self, h):
+        if not h.get("ok"):
+            self.fs_ch = None
+            code = h.get("code", "")
+            msg = h.get("message", "")
+            self._set_fs_state("error", f"{code}: {msg}" if msg else str(code or "open failed"))
+            return
+        self.fs_ch = h.get("channel", self.fs_ch)
+        self._set_fs_state("attached", f"channel {self.fs_ch}")
+        self.fs_navigate("/")
+
+    def _on_fs_closed(self, ch, code, reason):
+        if ch == self.fs_ch:
+            self._status(f"Remote file browser closed ({code})", 5000)
+            self._reset_fs()
+
+    def fs_navigate(self, path):
+        if self.fs_ch is None:
+            return
+        path = str(path).strip() or "/"
+        if not path.startswith("/"):
+            path = posixpath.join(self.fs_path, path)
+        path = posixpath.normpath(path) or "/"
+        self.ed_fs_path.setText(path)
+        self.client.fs_list(self.fs_ch, path)
+
+    def fs_go_up(self):
+        self.fs_navigate(posixpath.dirname(self.fs_path))
+
+    def _on_fs_list(self, h):
+        if h.get("channel") != self.fs_ch:
+            return
+        if not h.get("ok"):
+            self._status(f"List failed: {h.get('message') or h.get('code')}", 8000)
+            return
+        self.fs_path = h.get("path", "/")
+        self.ed_fs_path.setText(self.fs_path)
+        self.fs_table.setRowCount(0)
+        self._fs_entries = []
+        for e in h.get("entries") or []:
+            name = e.get("name", "")
+            kind = e.get("type", "-")
+            row = self.fs_table.rowCount()
+            self.fs_table.insertRow(row)
+            it = QTableWidgetItem(name + ("/" if kind == "d" else ""))
+            it.setData(Qt.UserRole, {"name": name, "type": kind})
+            self.fs_table.setItem(row, 0, it)
+            self.fs_table.setItem(row, 1, QTableWidgetItem(
+                "" if kind in ("d", "l") else _fmt_size(e.get("size", 0) or 0)))
+            mtime = e.get("mtime", 0) or 0
+            self.fs_table.setItem(row, 2, QTableWidgetItem(
+                datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime > 0 else ""))
+            self._fs_entries.append({"name": name, "type": kind})
+        if h.get("truncated"):
+            self._status("Listing truncated (folder has too many entries)", 6000)
+
+    def _fs_row_activated(self, item):
+        data = self.fs_table.item(item.row(), 0).data(Qt.UserRole)
+        if data and data["type"] == "d":
+            self.fs_navigate(posixpath.join(self.fs_path, data["name"]))
+
+    def _selected_fs(self):
+        rows = {i.row() for i in self.fs_table.selectionModel().selectedRows()}
+        return [self._fs_entries[r] for r in sorted(rows) if r < len(self._fs_entries)]
+
+    def fs_upload_dialog(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "Upload files to server")
+        if not paths:
+            return
+        for p in paths:
+            name = os.path.basename(p)
+            if any(e["name"] == name for e in self._fs_entries) and QMessageBox.question(
+                    self, "Replace file",
+                    f"'{name}' already exists in {self.fs_path}.\nReplace it?") != QMessageBox.Yes:
+                continue
+            self.client.fs_upload(self.fs_ch, p, posixpath.join(self.fs_path, name))
+
+    def fs_download_selected(self):
+        sel = self._selected_fs()
+        if len(sel) != 1 or sel[0]["type"] == "d":
+            return QMessageBox.information(
+                self, "Download", "Select exactly one file to download")
+        name = sel[0]["name"]
+        start = settings.get(settings.KEY_FS_DOWNLOAD_DIR, "") or ""
+        suggested = os.path.join(start, name) if start else name
+        path, _ = QFileDialog.getSaveFileName(self, "Download file", suggested)
+        if not path:
+            return
+        settings.put(settings.KEY_FS_DOWNLOAD_DIR, os.path.dirname(path) or ".")
+        self.client.fs_download(self.fs_ch, posixpath.join(self.fs_path, name), path)
+
+    def fs_mkdir_dialog(self):
+        name, ok = QInputDialog.getText(self, "New folder", "Folder name:")
+        if ok and name.strip() and "/" not in name:
+            self.client.fs_mkdir(self.fs_ch, posixpath.join(self.fs_path, name.strip()))
+        elif ok and name.strip():
+            QMessageBox.warning(self, "New folder", "The name must not contain '/'")
+
+    def fs_rename_dialog(self):
+        sel = self._selected_fs()
+        if len(sel) != 1:
+            return QMessageBox.information(
+                self, "Rename", "Select exactly one item to rename")
+        name, ok = QInputDialog.getText(self, "Rename", "New name:", text=sel[0]["name"])
+        if ok and name.strip() and "/" not in name and name != sel[0]["name"]:
+            self.client.fs_rename(self.fs_ch,
+                                  posixpath.join(self.fs_path, sel[0]["name"]),
+                                  posixpath.join(self.fs_path, name.strip()))
+
+    def fs_delete_selected(self):
+        sel = self._selected_fs()
+        if not sel:
+            return
+        if QMessageBox.question(
+                self, "Delete",
+                f"Delete {len(sel)} item(s) on the server? This cannot be undone.") != QMessageBox.Yes:
+            return
+        for e in sel:
+            self.client.fs_delete(self.fs_ch, posixpath.join(self.fs_path, e["name"]))
+
+    def _on_fs_op(self, h):
+        if h.get("channel") != self.fs_ch:
+            return
+        if not h.get("ok"):
+            self._status(f"{h.get('op', 'Operation')} failed: "
+                         f"{h.get('message') or h.get('code')}", 8000)
+        else:
+            self.fs_navigate(self.fs_path)      # refresh the listing
+
+    def _fs_row_for(self, fid, name, direction):
+        st = self._fs_rows.get(fid)
+        if st:
+            return st
+        r = self.fs_xfer.rowCount()
+        self.fs_xfer.insertRow(r)
+        self.fs_xfer.setItem(r, 0, QTableWidgetItem(name))
+        self.fs_xfer.setItem(r, 1, QTableWidgetItem(
+            "Upload → Server" if direction == "up" else "Download → PC"))
+        bar = QProgressBar(); bar.setValue(0); bar.setTextVisible(False)
+        bar.setFixedHeight(8)
+        bar_holder = QWidget()
+        bar_lay = QVBoxLayout(bar_holder)
+        bar_lay.setContentsMargins(0, 0, 0, 0)
+        bar_lay.addStretch(1); bar_lay.addWidget(bar); bar_lay.addStretch(1)
+        self.fs_xfer.setCellWidget(r, 2, bar_holder)
+        status = QTableWidgetItem("Transferring")
+        self.fs_xfer.setItem(r, 3, status)
+        action = QPushButton("Cancel")
+        action.setProperty("variant", "subtle")
+        action.clicked.connect(lambda _=False, f=fid: self._fs_row_action(f))
+        self.fs_xfer.setCellWidget(r, 4, action)
+        self.fs_xfer.setRowHeight(r, 34)
+        st = {"row": r, "bar": bar, "status": status, "action": action,
+              "state": "transferring", "direction": direction, "path": ""}
+        self._fs_rows[fid] = st
+        return st
+
+    def _fs_row_action(self, fid):
+        st = self._fs_rows.get(fid)
+        if not st:
+            return
+        if st["state"] == "transferring":
+            if st["direction"] == "up":
+                self.client.cancel_fs_upload(fid)
+            else:
+                self.client.fs_abort(fid)
+        elif st["state"] == "done" and st["direction"] == "down" and st["path"]:
+            widgets.open_in_file_manager(st["path"])
+
+    def _on_fs_prog(self, fid, name, sent, total, d):
+        st = self._fs_row_for(fid, name, d)
+        st["bar"].setValue(int(sent * 100 / max(total, 1)))
+
+    def _on_fs_done(self, fid, name, ok, d, path):
+        st = self._fs_row_for(fid, name, d)
+        st["bar"].setValue(100 if ok else st["bar"].value())
+        st["state"] = "done" if ok else "failed"
+        st["path"] = path if (ok and d == "down") else ""
+        if ok:
+            text = f"Done → {path}" if path else "Done"
+        else:
+            text = f"Failed — {path}" if path else "Failed"
+        st["status"].setText(("✓ " if ok else "✗ ") + text)
+        st["status"].setToolTip(text)
+        if st["state"] == "done" and d == "down" and path:
+            st["action"].setText("Reveal")
+            st["action"].setEnabled(True)
+        else:
+            st["action"].setText("—")
+            st["action"].setEnabled(False)
+
     # ---- USB connection management ----
     def refresh(self):
         self._refresh_device_list()
@@ -855,6 +1246,12 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         self._reset_attach()
+        if self.fs_ch is not None:
+            try:
+                self.client.fs_close(self.fs_ch)
+            except Exception:
+                pass
+        self._reset_fs()
         self.client.close()
         self._set_conn_state("disconnected")
         serial = self.dlg.selected_serial()

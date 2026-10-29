@@ -20,6 +20,13 @@ object FrameIO {
     const val ACK = 0x20; const val ERROR = 0x21; const val PING = 0x30; const val PONG = 0x31
     const val PROXY_OPEN = 0x40; const val PROXY_OPENED = 0x41
     const val PROXY_DATA = 0x42; const val PROXY_CLOSE = 0x43
+    const val FS_OPEN = 0x50; const val FS_OPENED = 0x51; const val FS_CLOSE = 0x52
+    const val FS_LIST = 0x53; const val FS_LIST_RESULT = 0x54
+    const val FS_MKDIR = 0x55; const val FS_DELETE = 0x56; const val FS_RENAME = 0x57
+    const val FS_OP_RESULT = 0x58
+    const val FS_DL_META = 0x59; const val FS_DL_RESULT = 0x5A
+    const val FS_UL_META = 0x5B; const val FS_UL_RESULT = 0x5C
+    const val FS_CHUNK = 0x5D; const val FS_END = 0x5E; const val FS_ABORT = 0x5F
 
     /** Phone-side id space starts at 0x40000000 to avoid colliding with the PC side (starting at 1) */
     private val idSeq = AtomicInteger(0x40000000)

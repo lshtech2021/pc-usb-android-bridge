@@ -17,6 +17,7 @@ import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.documentfile.provider.DocumentFile
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Closeable
 import java.io.File
@@ -306,6 +307,10 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     /** Reverse-tether streams, each with its own reader/writer threads (no shared executor). */
     private val proxies = ConcurrentHashMap<Int, ProxySession>()
 
+    /** Remote-file-explorer transfers (feature 4): SFTP I/O never runs on the read loop. */
+    private val fsUps = ConcurrentHashMap<Int, FsUpload>()
+    private val fsDls = ConcurrentHashMap<Int, FsDownload>()
+
     /** Remote channel operations run serially: guarantees OPEN -> DATA ordering without blocking the main read loop (TEXT/FILE/PING are unaffected by the SSH handshake) */
     private val remoteOps = Executors.newSingleThreadExecutor()
 
@@ -581,6 +586,68 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                         proxies.remove(sid)?.close()
                     }
                 }
+
+                // ---- Remote file explorer (feature 4): slow SFTP ops go to remoteOps, transfers to dedicated queues/threads ----
+                FrameIO.FS_OPEN -> {
+                    val ch = optInt("channel"); val cid = optString("connection_id")
+                    post {                                  // sftp connect can block up to 10 s
+                        try {
+                            ConnectionHub.openFs(this@SessionHandler, ch, cid)
+                            send(FrameIO.FS_OPENED,
+                                JSONObject().put("channel", ch).put("ok", true))
+                        } catch (e: ConnectionHub.HubException) {
+                            send(FrameIO.FS_OPENED, JSONObject().put("channel", ch)
+                                .put("ok", false).put("code", e.code).put("message", e.message ?: ""))
+                        } catch (e: Exception) {
+                            send(FrameIO.FS_OPENED, JSONObject().put("channel", ch)
+                                .put("ok", false).put("code", "FS_OPEN_FAILED").put("message", e.message ?: ""))
+                        }
+                    }
+                }
+
+                FrameIO.FS_CLOSE -> {                      // one-way, no reply
+                    val ch = optInt("channel")
+                    post { ConnectionHub.closeFsChannel(ch) }   // sftp.disconnect() may block
+                }
+
+                FrameIO.FS_LIST -> {
+                    val ch = optInt("channel"); val req = optInt("req"); val path = optString("path")
+                    post { fsList(ch, req, path) }         // sftp.ls() blocks
+                }
+
+                FrameIO.FS_MKDIR, FrameIO.FS_DELETE, FrameIO.FS_RENAME -> {
+                    val ch = optInt("channel"); val req = optInt("req")
+                    post { fsOp(f.type, ch, req, f.header) }
+                }
+
+                FrameIO.FS_DL_META -> {
+                    val ch = optInt("channel"); val id = optInt("id"); val path = optString("path")
+                    post { fsDlMeta(ch, id, path) }        // stat + get() open; streaming moves to a pool thread
+                }
+
+                FrameIO.FS_UL_META -> {
+                    val ch = optInt("channel"); val id = optInt("id")
+                    val path = optString("path"); val size = optLong("size")
+                    post { fsUlMeta(ch, id, path, size) }  // put() open; the drain also runs on remoteOps
+                }
+
+                FrameIO.FS_CHUNK -> {                      // READ LOOP, O(1)
+                    val id = optInt("id")
+                    val up = fsUps[id] ?: return@with
+                    if (!up.offer(f.payload)) {            // > 4 MiB queued -> tear this upload down only
+                        fsUps.remove(id)
+                        post { up.teardown("buffer overflow") }
+                    }
+                }
+
+                FrameIO.FS_END -> {                        // READ LOOP, O(1): becomes an in-queue marker
+                    fsUps[optInt("id")]?.end(optBoolean("ok"), optNullableString("sha256"))
+                }
+
+                FrameIO.FS_ABORT -> {                      // stream close sends an SFTP request
+                    val id = optInt("id")
+                    post { fsDls[id]?.abort() }
+                }
                 else -> {}
             }
         }
@@ -588,6 +655,165 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
 
     private fun post(task: () -> Unit) {
         runCatching { remoteOps.execute(task) }        // The queue is shut down after close(), so new tasks are ignored
+    }
+
+    // ---------- Feature 4: remote file explorer over phone-managed SFTP ----------
+    // These run on remoteOps (blocking SFTP I/O) or on dedicated threads; the read loop only
+    // enqueues O(1). Ordering-sensitive upload chunks drain serially from a bounded queue.
+
+    private fun fsBind(ch: Int): ConnectionHub.FsBind? =
+        ConnectionHub.fsByChannel(ch)?.takeIf { it.handler === this }
+
+    private fun fsList(ch: Int, req: Int, path: String) {
+        val bind = fsBind(ch)
+        if (bind == null) {
+            fsListFail(ch, req, path, "FS_BAD_REQUEST", "file browser not open")
+            return
+        }
+        try {
+            val vec = bind.sftp.ls(path)                        // throws SftpException
+            val entries = JSONArray()
+            var nameBytes = 0
+            for (e in vec) {
+                val name = e.filename
+                if (name == "." || name == "..") continue
+                val attrs = e.attrs
+                val type = attrs.permissionsString.takeIf { it.isNotEmpty() }?.substring(0, 1) ?: "-"
+                val je = JSONObject().put("name", name).put("type", type)
+                if (type != "d" && type != "l") je.put("size", attrs.size)
+                if (attrs.mTime > 0) je.put("mtime", attrs.mTime.toLong())
+                entries.put(je)
+                nameBytes += name.length
+                // 16-bit headerLen caps the header near 64 KiB: stop early and flag it.
+                if (entries.length() >= 400 || nameBytes > 40 * 1024) {
+                    send(FrameIO.FS_LIST_RESULT, JSONObject()
+                        .put("channel", ch).put("req", req).put("ok", true)
+                        .put("path", path).put("entries", entries).put("truncated", true))
+                    return
+                }
+            }
+            // Dirs first, then case-insensitive name (JSONArray has no sort, so rebuild).
+            val flat = (0 until entries.length()).map { entries.getJSONObject(it) }
+            val sorted = flat.sortedWith(compareBy(
+                { if (it.optString("type") == "d") 0 else 1 },
+                { it.optString("name").lowercase() }))
+            val arr = JSONArray()
+            sorted.forEach { arr.put(it) }
+            send(FrameIO.FS_LIST_RESULT, JSONObject()
+                .put("channel", ch).put("req", req).put("ok", true)
+                .put("path", path).put("entries", arr))
+        } catch (e: Exception) {
+            fsListFail(ch, req, path, "FS_IO_FAILED", e.message ?: "list failed")
+        }
+    }
+
+    private fun fsListFail(ch: Int, req: Int, path: String, code: String, message: String) {
+        send(FrameIO.FS_LIST_RESULT, JSONObject()
+            .put("channel", ch).put("req", req).put("ok", false)
+            .put("path", path).put("code", code).put("message", message))
+    }
+
+    private fun fsOp(type: Int, ch: Int, req: Int, h: JSONObject) {
+        val op = when (type) {
+            FrameIO.FS_MKDIR -> "mkdir"
+            FrameIO.FS_RENAME -> "rename"
+            else -> "delete"
+        }
+        val bind = fsBind(ch)
+        if (bind == null) {
+            fsOpFail(ch, req, op, "FS_BAD_REQUEST", "file browser not open")
+            return
+        }
+        try {
+            when (type) {
+                FrameIO.FS_MKDIR -> bind.sftp.mkdir(h.optString("path"))
+                FrameIO.FS_RENAME -> bind.sftp.rename(h.optString("path"), h.optString("path2"))
+                FrameIO.FS_DELETE -> {
+                    val path = h.optString("path")
+                    val attrs = bind.sftp.lstat(path)
+                    if (attrs.isDir) bind.sftp.rmdir(path) else bind.sftp.rm(path)
+                }
+            }
+            fsOpOk(ch, req, op)
+        } catch (e: Exception) {
+            fsOpFail(ch, req, op, "FS_IO_FAILED", e.message ?: "operation failed")
+        }
+    }
+
+    private fun fsOpOk(ch: Int, req: Int, op: String) {
+        send(FrameIO.FS_OP_RESULT, JSONObject()
+            .put("channel", ch).put("req", req).put("op", op).put("ok", true))
+    }
+
+    private fun fsOpFail(ch: Int, req: Int, op: String, code: String, message: String) {
+        send(FrameIO.FS_OP_RESULT, JSONObject()
+            .put("channel", ch).put("req", req).put("op", op).put("ok", false)
+            .put("code", code).put("message", message))
+    }
+
+    private fun fsDlMeta(ch: Int, id: Int, path: String) {
+        val bind = fsBind(ch)
+        if (bind == null) {
+            fsDlFail(ch, id, "FS_BAD_REQUEST", "file browser not open")
+            return
+        }
+        try {
+            val size = bind.sftp.stat(path).size            // follows links, like get()
+            if (size > BridgeService.MAX_FILE_SIZE) {
+                fsDlFail(ch, id, "FS_BAD_REQUEST", "file exceeds 2GB limit")
+                return
+            }
+            val ins = bind.sftp.get(path)                   // SSH_FXP_OPEN
+            val dl = FsDownload(id, ch, ins, { t, hh, p -> send(t, hh, p) },
+                { i -> fsDls.remove(i) })
+            if (fsDls.putIfAbsent(id, dl) == null) {
+                send(FrameIO.FS_DL_RESULT, JSONObject()
+                    .put("channel", ch).put("id", id).put("ok", true).put("size", size))
+                BridgeService.poolExecute { dl.run() }
+            } else {
+                runCatching { ins.close() }
+                fsDlFail(ch, id, "FS_BAD_REQUEST", "duplicate id")
+            }
+        } catch (e: Exception) {
+            fsDlFail(ch, id, "FS_IO_FAILED", e.message ?: "cannot open remote file")
+        }
+    }
+
+    private fun fsDlFail(ch: Int, id: Int, code: String, message: String) {
+        send(FrameIO.FS_DL_RESULT, JSONObject()
+            .put("channel", ch).put("id", id).put("ok", false)
+            .put("code", code).put("message", message))
+    }
+
+    private fun fsUlMeta(ch: Int, id: Int, path: String, size: Long) {
+        val bind = fsBind(ch)
+        if (bind == null) {
+            fsUlFail(ch, id, "FS_BAD_REQUEST", "file browser not open")
+            return
+        }
+        if (size > BridgeService.MAX_FILE_SIZE) {
+            fsUlFail(ch, id, "FS_BAD_REQUEST", "file exceeds 2GB limit")
+            return
+        }
+        try {
+            val up = FsUpload(id, bind.sftp, path, { t, hh, p -> send(t, hh, p) },
+                { task -> post(task) }, { i -> fsUps.remove(i) })
+            if (fsUps.putIfAbsent(id, up) == null) {
+                send(FrameIO.FS_UL_RESULT, JSONObject()
+                    .put("channel", ch).put("id", id).put("ok", true))
+                up.startDraining()
+            } else {
+                fsUlFail(ch, id, "FS_BAD_REQUEST", "duplicate id")
+            }
+        } catch (e: Exception) {                            // sftp.put() failed (bad path, etc.)
+            fsUlFail(ch, id, "FS_IO_FAILED", e.message ?: "cannot open remote file")
+        }
+    }
+
+    private fun fsUlFail(ch: Int, id: Int, code: String, message: String) {
+        send(FrameIO.FS_UL_RESULT, JSONObject()
+            .put("channel", ch).put("id", id).put("ok", false)
+            .put("code", code).put("message", message))
     }
 
     // ---------- Feature 1/2: phone -> PC text and files ----------
@@ -660,6 +886,11 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
         proxies.values.forEach { it.close() }
         proxies.clear()
         sinks.values.forEach { it.abort() }
+        // FS teardown must be direct calls: remoteOps is already shut down (no post{}).
+        // teardown() sends its ACK through send(), which no-ops on a closed handler.
+        fsDls.values.forEach { it.abort() }
+        fsUps.values.forEach { it.teardown("disconnected") }
+        ConnectionHub.detachFsHandler(this)
         BridgeService.removeSession(this)
         runCatching { sock.close() }
     }
