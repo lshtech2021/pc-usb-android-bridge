@@ -1,6 +1,7 @@
 package com.example.usbbridge
 
 import android.content.Context
+import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSchException
 import org.json.JSONArray
@@ -27,13 +28,22 @@ object ConnectionHub {
         val handler: SessionHandler
     )
 
+    /** PC binding of the SFTP channel (file explorer). Independent of the terminal [Attach]:
+     *  a terminal and a file browser can be attached to the same connection at once. */
+    data class FsBind(
+        val channel: Int,
+        val handler: SessionHandler,
+        val sftp: ChannelSftp
+    )
+
     data class Live(
         val id: String,
         @Volatile var state: String = STATE_STOPPED,
         @Volatile var session: RemoteSession? = null,
         @Volatile var lastError: String? = null,
         val ring: ByteArrayOutputStream = ByteArrayOutputStream(),
-        @Volatile var attach: Attach? = null
+        @Volatile var attach: Attach? = null,
+        @Volatile var fs: FsBind? = null
     )
 
     private val lives = ConcurrentHashMap<String, Live>()
@@ -122,19 +132,28 @@ object ConnectionHub {
 
     fun stop(id: String) {
         val live = lives[id] ?: return
-        val att = synchronized(lock) {
+        val (att, f) = synchronized(lock) {
             val a = live.attach
             live.attach = null
+            val fsb = live.fs
+            live.fs = null
             live.session?.close()
             live.session = null
             live.state = STATE_STOPPED
             live.lastError = null
-            a
+            Pair(a, fsb)
         }
         att?.let { a ->
             runCatching {
                 a.handler.send(FrameIO.REMOTE_CLOSE,
                     JSONObject().put("channel", a.channel).put("code", 0).put("reason", "stopped on phone"))
+            }
+        }
+        f?.let { b ->
+            runCatching { b.sftp.disconnect() }
+            runCatching {
+                b.handler.send(FrameIO.FS_CLOSE,
+                    JSONObject().put("channel", b.channel).put("code", 0).put("reason", "stopped on phone"))
             }
         }
         notifyListeners()
@@ -166,6 +185,61 @@ object ConnectionHub {
             synchronized(lock) {
                 if (live.attach?.handler === handler) live.attach = null
             }
+        }
+    }
+
+    /** Open an SFTP channel on a running connection and bind it to a PC channel. */
+    fun openFs(handler: SessionHandler, channel: Int, connectionId: String) {
+        val live = lives[connectionId] ?: throw HubException("CONN_NOT_FOUND", "unknown id")
+        synchronized(lock) {
+            if (live.state != STATE_RUNNING || live.session == null)
+                throw HubException("CONN_NOT_RUNNING", "connection is not running")
+            if (live.fs != null) throw HubException("FS_BUSY", "file browser already attached")
+            if (fsByChannel(channel) != null) throw HubException("FS_BUSY", "channel already attached")
+        }
+        // The SFTP handshake is network I/O (up to 10 s): never hold the hub lock during it.
+        val session = live.session
+            ?: throw HubException("CONN_NOT_RUNNING", "connection is not running")
+        val sftp = runCatching { session.openSftp() }
+            .getOrElse { throw HubException("FS_OPEN_FAILED", it.message ?: "sftp open failed") }
+            ?: throw HubException("FS_OPEN_FAILED", "no session")
+        synchronized(lock) {
+            // Re-check: the session may have stopped while the handshake ran.
+            if (live.state != STATE_RUNNING || live.session == null) {
+                runCatching { sftp.disconnect() }
+                throw HubException("CONN_NOT_RUNNING", "connection is not running")
+            }
+            if (live.fs != null) {
+                runCatching { sftp.disconnect() }
+                throw HubException("FS_BUSY", "file browser already attached")
+            }
+            live.fs = FsBind(channel, handler, sftp)
+        }
+    }
+
+    fun fsByChannel(channel: Int): FsBind? =
+        lives.values.firstOrNull { it.fs?.channel == channel }?.fs
+
+    /** PC-initiated close: unbind and drop the SFTP channel. */
+    fun closeFsChannel(channel: Int) {
+        lives.values.forEach { live ->
+            val b = synchronized(lock) {
+                val f = live.fs
+                if (f?.channel == channel) { live.fs = null; f } else null
+            }
+            b?.let { runCatching { it.sftp.disconnect() } }
+        }
+    }
+
+    /** USB session teardown: the SFTP channel is binding-lifetime (unlike the shell,
+     *  nothing user-visible is lost by dropping it). */
+    fun detachFsHandler(handler: SessionHandler) {
+        lives.values.forEach { live ->
+            val b = synchronized(lock) {
+                val f = live.fs
+                if (f?.handler === handler) { live.fs = null; f } else null
+            }
+            b?.let { runCatching { it.sftp.disconnect() } }
         }
     }
 
@@ -258,17 +332,26 @@ object ConnectionHub {
     }
 
     private fun onSessionClosed(live: Live, code: Int, reason: String) {
-        val att = synchronized(lock) {
+        val (att, f) = synchronized(lock) {
             val a = live.attach
             live.attach = null
+            val fsb = live.fs
+            live.fs = null
             live.session = null
             if (live.state == STATE_RUNNING) live.state = STATE_STOPPED
-            a
+            Pair(a, fsb)
         }
         att?.let { a ->
             runCatching {
                 a.handler.send(FrameIO.REMOTE_CLOSE,
                     JSONObject().put("channel", a.channel).put("code", code).put("reason", reason))
+            }
+        }
+        f?.let { b ->
+            runCatching { b.sftp.disconnect() }
+            runCatching {
+                b.handler.send(FrameIO.FS_CLOSE,
+                    JSONObject().put("channel", b.channel).put("code", code).put("reason", reason))
             }
         }
         notifyListeners()
