@@ -348,7 +348,16 @@ class MainWindow(QMainWindow):
         self._apply_theme()
         geometry = settings.get(settings.KEY_GEOMETRY)
         if geometry is not None:
-            self.restoreGeometry(geometry)
+            # Clamp before applying: Windows emits a setGeometry warning when
+            # restoreGeometry asks for a frame larger than the current screen.
+            screen = self.screen() or QApplication.primaryScreen()
+            old_max = self.maximumSize()
+            if screen is not None:
+                self.setMaximumSize(screen.availableGeometry().size())
+            try:
+                self.restoreGeometry(geometry)
+            finally:
+                self.setMaximumSize(old_max)
             self._clamp_to_screen()
         try:
             tab = int(settings.get(settings.KEY_TAB, 0))
