@@ -120,13 +120,28 @@ def test_ctrl_c_copy_vs_interrupt():
 
 
 def test_bracketed_paste():
+    import terminal_view
+
     w = make_widget()
     feed(w, b"\x1b[?2004h")
     QApplication.clipboard().setText("a\nb")
     out = []
     w.bytes_out.connect(out.append)
     w._paste_clipboard()
-    assert out == [b"\x1b[200~a\nb\x1b[201~"]
+    # Raw paste is the default; the previous widget behaved this way and some
+    # remote shells mishandle the bracketed wrapper.
+    assert out == [b"a\nb"]
+    w._paste_clipboard()
+    assert out[-1] == b"a\nb"
+
+    # The wrapper code remains available for shells that handle it.
+    old = terminal_view.USE_BRACKETED_PASTE
+    terminal_view.USE_BRACKETED_PASTE = True
+    try:
+        w._paste_clipboard()
+        assert out[-1] == b"\x1b[200~a\nb\x1b[201~"
+    finally:
+        terminal_view.USE_BRACKETED_PASTE = old
     w.close()
 
 

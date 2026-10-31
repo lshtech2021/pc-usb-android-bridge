@@ -42,6 +42,10 @@ MIN_FONT_SIZE, MAX_FONT_SIZE = 7, 26
 SCROLL_LINES = 3
 FEED_CHUNK = 8 * 1024
 FEED_INTERVAL_MS = 16
+# The previous terminal sent clipboard text verbatim. Some remote shells that
+# advertise ?2004 still mishandle the bracketed wrapper, so keep raw paste as
+# the default; flip this to True to use bracketed paste for multi-line text.
+USE_BRACKETED_PASTE = False
 
 _BASE_TO_BRIGHT = {
     "black": "brightblack",
@@ -560,7 +564,7 @@ class TerminalWidget(QAbstractScrollArea):
         if not text:
             return
         text = text.replace("\r\n", "\n").replace("\r", "\n")
-        if private_mode(self._screen, 2004):
+        if USE_BRACKETED_PASTE and private_mode(self._screen, 2004):
             text = "\x1b[200~" + text + "\x1b[201~"
         self._send_text(text)
 
