@@ -365,7 +365,10 @@ class TerminalWidget(QAbstractScrollArea):
         self._sync_scrollbar()
 
     def sizeHint(self) -> QSize:
-        return QSize(int(self._cell_w * 80), int(self._cell_h * 24))
+        # Keep the layout minimum below a 1366x768 laptop screen; the fixed
+        # 120-column grid then uses the horizontal scrollbar instead of forcing
+        # an oversized window.
+        return QSize(int(self._cell_w * 60), int(self._cell_h * 20))
 
     def _scroll_lines(self, delta: int):
         vbar = self.verticalScrollBar()
@@ -651,8 +654,8 @@ class TerminalWidget(QAbstractScrollArea):
         if query == Qt.InputMethodQuery.ImEnabled:
             return True
         if query == Qt.InputMethodQuery.ImHints:
-            return int(Qt.InputMethodHint.ImhNoPredictiveText
-                       | Qt.InputMethodHint.ImhNoAutoUppercase)
+            return (Qt.InputMethodHint.ImhNoPredictiveText
+                    | Qt.InputMethodHint.ImhNoAutoUppercase).value
         return super().inputMethodQuery(query)
 
     def _cursor_abs_line(self):

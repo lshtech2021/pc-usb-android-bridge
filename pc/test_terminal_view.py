@@ -181,6 +181,8 @@ def test_ime_commit():
     assert out == ["中文".encode("utf-8")]
     rect = w.inputMethodQuery(Qt.InputMethodQuery.ImCursorRectangle)
     assert isinstance(rect, QRect)
+    hints = w.inputMethodQuery(Qt.InputMethodQuery.ImHints)
+    assert isinstance(hints, int) and hints
     w.close()
 
 
