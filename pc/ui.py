@@ -12,7 +12,7 @@ from PyQt6.QtGui import (QAction, QActionGroup, QColor, QIcon, QKeySequence,
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QAbstractItemView,
     QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel,
     QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
-    QInputDialog, QTableWidget, QTableWidgetItem, QHeaderView)
+    QInputDialog, QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy)
 
 import settings
 import theme
@@ -349,6 +349,7 @@ class MainWindow(QMainWindow):
         geometry = settings.get(settings.KEY_GEOMETRY)
         if geometry is not None:
             self.restoreGeometry(geometry)
+            self._clamp_to_screen()
         try:
             tab = int(settings.get(settings.KEY_TAB, 0))
         except (TypeError, ValueError):
@@ -364,6 +365,25 @@ class MainWindow(QMainWindow):
         # below starts the listener (it only carries traffic while the bridge is sealed).
         enabled = settings.get(settings.KEY_PROXY_ENABLED, True)
         self.act_proxy.setChecked(str(enabled).lower() in ("true", "1"))
+
+    def _clamp_to_screen(self):
+        """Keep a restored geometry inside the current screen.
+
+        A window saved on a larger monitor otherwise makes Windows emit
+        "QWindowsWindow::setGeometry: Unable to set geometry" on every start.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        frame = self.frameGeometry()
+        if frame.width() <= avail.width() and frame.height() <= avail.height():
+            return
+        width = min(frame.width(), avail.width())
+        height = min(frame.height(), avail.height())
+        x = max(avail.left(), min(frame.x(), avail.right() - width + 1))
+        y = max(avail.top(), min(frame.y(), avail.bottom() - height + 1))
+        self.setGeometry(x, y, width, height)
 
     def closeEvent(self, event):
         settings.put(settings.KEY_GEOMETRY, self.saveGeometry())
@@ -404,6 +424,11 @@ class MainWindow(QMainWindow):
         self.btn_connection.clicked.connect(self.open_connection_dialog)
         self.lbl_device = theme.caption("No device")
         self.lbl_device.setToolTip("Device selected in the connection dialog")
+        # adb descriptions can be very long; without this the strip forces the
+        # whole window wider than a 1366px laptop screen.
+        self.lbl_device.setMaximumWidth(420)
+        self.lbl_device.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.btn_connect = QPushButton("Connect")
         self.btn_connect.setProperty("variant", "primary")
         self.btn_connect.setToolTip("Forward the USB port and handshake with the phone (Ctrl+K)")
