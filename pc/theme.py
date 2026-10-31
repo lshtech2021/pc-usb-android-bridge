@@ -6,8 +6,8 @@ stylesheet() to switch between light and dark.
 """
 from string import Template
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget)
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget)
 
 # ---- Spacing scale (px) ----
 SPACE_XS = 4
@@ -79,14 +79,48 @@ TERMINAL_THEMES = {
     "light": {
         "bg": "#FFFFFF",
         "fg": "#1F2430",
+        "cursor": "#1F2430",
         "selection": "#CFE0FF",
         "selection_fg": "#1F2430",
+        "black": "#1F2430",
+        "red": "#B91C1C",
+        "green": "#15803D",
+        "yellow": "#A16207",
+        "blue": "#1D4ED8",
+        "magenta": "#7E22CE",
+        "cyan": "#0E7490",
+        "white": "#94A3B8",
+        "brightblack": "#64748B",
+        "brightred": "#DC2626",
+        "brightgreen": "#16A34A",
+        "brightyellow": "#CA8A04",
+        "brightblue": "#2563EB",
+        "brightmagenta": "#9333EA",
+        "brightcyan": "#0891B2",
+        "brightwhite": "#0F172A",
     },
     "dark": {
         "bg": "#1E1E1E",
         "fg": "#D4D4D4",
+        "cursor": "#D4D4D4",
         "selection": "#264F78",
         "selection_fg": "#FFFFFF",
+        "black": "#000000",
+        "red": "#CD3131",
+        "green": "#0DBC79",
+        "yellow": "#E5E510",
+        "blue": "#2472C8",
+        "magenta": "#BC3FBC",
+        "cyan": "#11A8CD",
+        "white": "#E5E5E5",
+        "brightblack": "#666666",
+        "brightred": "#F14C4C",
+        "brightgreen": "#23D18B",
+        "brightyellow": "#F5F543",
+        "brightblue": "#3B8EEA",
+        "brightmagenta": "#D670D6",
+        "brightcyan": "#29B8DB",
+        "brightwhite": "#FFFFFF",
     },
 }
 
@@ -323,7 +357,7 @@ class StatePill(QWidget):
         super().__init__(parent)
         self.setObjectName("statePill")
         # Hug the content: a pill that stretched to fill its row would read as a banner.
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self._states = states or self.DEFAULT_STATES
         lay = QHBoxLayout(self)
         lay.setContentsMargins(int(SPACE_M), int(SPACE_XS), int(SPACE_M), int(SPACE_XS))
@@ -375,7 +409,7 @@ def vertical_separator() -> QWidget:
     sep.setProperty("role", "vsep")
     sep.setFixedWidth(1)
     sep.setMinimumHeight(22)
-    sep.setFrameShape(QFrame.NoFrame)
+    sep.setFrameShape(QFrame.Shape.NoFrame)
     return sep
 
 
@@ -388,5 +422,5 @@ def caption(text: str) -> QLabel:
 def field_label(text: str) -> QLabel:
     lbl = QLabel(text)
     lbl.setProperty("role", "fieldLabel")
-    lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
     return lbl

@@ -1,4 +1,4 @@
-"""PyQt5 UI: four tabs (messages / files / remote terminal / remote files).
+"""PyQt6 UI: four tabs (messages / files / remote terminal / remote files).
 
 Run: py ui.py
 """
@@ -6,10 +6,11 @@ import posixpath
 import sys
 from datetime import datetime
 
-from PyQt5.QtCore import QTimer, pyqtSignal, Qt
-from PyQt5.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap
-from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QMainWindow,
-    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QShortcut,
+from PyQt6.QtCore import QTimer, pyqtSignal, Qt
+from PyQt6.QtGui import (QAction, QActionGroup, QColor, QIcon, QKeySequence,
+                         QPainter, QPixmap, QShortcut)
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QAbstractItemView,
+    QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel,
     QTabWidget, QLineEdit, QProgressBar, QFileDialog, QMessageBox,
     QInputDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 
@@ -73,10 +74,10 @@ SHORTCUTS = [
 def state_dot_icon(color_key: str) -> QIcon:
     """Small filled circle used to mark connection state in the picker."""
     pm = QPixmap(10, 10)
-    pm.fill(Qt.transparent)
+    pm.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pm)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(Qt.NoPen)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(theme.color(color_key)))
     painter.drawEllipse(0, 0, 9, 9)
     painter.end()
@@ -299,7 +300,7 @@ class MainWindow(QMainWindow):
         self.term.apply_theme()
         for combo in (self.cmb_conn, self.cmb_fs_conn):
             for i in range(combo.count()):
-                state = combo.itemData(i, Qt.UserRole + 1)
+                state = combo.itemData(i, Qt.ItemDataRole.UserRole + 1)
                 if state:
                     combo.setItemIcon(i, state_dot_icon(CONNECTION_DOT.get(
                         state, "dot_disconnected")))
@@ -420,9 +421,9 @@ class MainWindow(QMainWindow):
 
         self.proxy_pill = theme.StatePill(PROXY_STATES, "off")
         self.proxy_pill.setToolTip("Reverse tethering (SOCKS5) proxy state")
-        row.addWidget(self.proxy_pill, 0, Qt.AlignRight)
+        row.addWidget(self.proxy_pill, 0, Qt.AlignmentFlag.AlignRight)
         self.chip = theme.connection_pill()
-        row.addWidget(self.chip, 0, Qt.AlignRight)
+        row.addWidget(self.chip, 0, Qt.AlignmentFlag.AlignRight)
         return card
 
     # ---- Connection dialog ----
@@ -664,7 +665,7 @@ class MainWindow(QMainWindow):
             n = len(paths)
             if QMessageBox.question(
                     self, "Send files",
-                    f"Send {n} files to the phone?") != QMessageBox.Yes:
+                    f"Send {n} files to the phone?") != QMessageBox.StandardButton.Yes:
                 return
         for p in paths:
             self.client.send_file(p)
@@ -767,7 +768,7 @@ class MainWindow(QMainWindow):
         v.addLayout(h)
 
         self.term_pill = theme.StatePill(TERMINAL_STATES, "detached")
-        v.addWidget(self.term_pill, 0, Qt.AlignLeft)
+        v.addWidget(self.term_pill, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.term = TerminalWidget()
         self.term.bytes_out.connect(self._term_bytes)
@@ -813,12 +814,12 @@ class MainWindow(QMainWindow):
             combo.addItem(
                 state_dot_icon(CONNECTION_DOT.get(state, "dot_disconnected")), label, cid)
             # Remember the raw state so a palette change can redraw the dot.
-            combo.setItemData(combo.count() - 1, state, Qt.UserRole + 1)
+            combo.setItemData(combo.count() - 1, state, Qt.ItemDataRole.UserRole + 1)
             if state != "running":
                 combo.setItemData(
                     combo.count() - 1,
                     f"Only a running connection can be {verb} — start it on the phone",
-                    Qt.ToolTipRole)
+                    Qt.ItemDataRole.ToolTipRole)
         if cur:
             i = combo.findData(cur)
             if i >= 0:
@@ -915,7 +916,7 @@ class MainWindow(QMainWindow):
         v.addLayout(h)
 
         self.fs_pill = theme.StatePill(FS_STATES, "detached")
-        v.addWidget(self.fs_pill, 0, Qt.AlignLeft)
+        v.addWidget(self.fs_pill, 0, Qt.AlignmentFlag.AlignLeft)
 
         p = QHBoxLayout()
         p.setSpacing(theme.SPACE_S)
@@ -964,12 +965,15 @@ class MainWindow(QMainWindow):
 
         self.fs_table = QTableWidget(0, 3)
         self.fs_table.setHorizontalHeaderLabels(["Name", "Size", "Modified"])
-        self.fs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.fs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.fs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.fs_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.fs_table.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.fs_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.fs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.fs_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.fs_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.fs_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.fs_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.fs_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
         self.fs_table.setShowGrid(False)
         self.fs_table.setToolTip("Double-click a folder to open it; select files to download")
         self.fs_table.itemDoubleClicked.connect(self._fs_row_activated)
@@ -979,12 +983,14 @@ class MainWindow(QMainWindow):
         self.fs_xfer = QTableWidget(0, 5)
         self.fs_xfer.setHorizontalHeaderLabels(
             ["File", "Direction", "Progress", "Status", "Action"])
-        self.fs_xfer.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.fs_xfer.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for col in range(1, 5):
             self.fs_xfer.horizontalHeader().setSectionResizeMode(
-                col, QHeaderView.ResizeToContents)
-        self.fs_xfer.setSelectionMode(QTableWidget.NoSelection)
-        self.fs_xfer.setEditTriggers(QTableWidget.NoEditTriggers)
+                col, QHeaderView.ResizeMode.ResizeToContents)
+        self.fs_xfer.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection)
+        self.fs_xfer.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
         self.fs_xfer.setShowGrid(False)
         self.fs_xfer.setMaximumHeight(180)
         v.addWidget(self.fs_xfer)
@@ -1071,7 +1077,7 @@ class MainWindow(QMainWindow):
             row = self.fs_table.rowCount()
             self.fs_table.insertRow(row)
             it = QTableWidgetItem(name + ("/" if kind == "d" else ""))
-            it.setData(Qt.UserRole, {"name": name, "type": kind})
+            it.setData(Qt.ItemDataRole.UserRole, {"name": name, "type": kind})
             self.fs_table.setItem(row, 0, it)
             self.fs_table.setItem(row, 1, QTableWidgetItem(
                 "" if kind in ("d", "l") else _fmt_size(e.get("size", 0) or 0)))
@@ -1083,7 +1089,7 @@ class MainWindow(QMainWindow):
             self._status("Listing truncated (folder has too many entries)", 6000)
 
     def _fs_row_activated(self, item):
-        data = self.fs_table.item(item.row(), 0).data(Qt.UserRole)
+        data = self.fs_table.item(item.row(), 0).data(Qt.ItemDataRole.UserRole)
         if data and data["type"] == "d":
             self.fs_navigate(posixpath.join(self.fs_path, data["name"]))
 
@@ -1099,7 +1105,7 @@ class MainWindow(QMainWindow):
             name = os.path.basename(p)
             if any(e["name"] == name for e in self._fs_entries) and QMessageBox.question(
                     self, "Replace file",
-                    f"'{name}' already exists in {self.fs_path}.\nReplace it?") != QMessageBox.Yes:
+                    f"'{name}' already exists in {self.fs_path}.\nReplace it?") != QMessageBox.StandardButton.Yes:
                 continue
             self.client.fs_upload(self.fs_ch, p, posixpath.join(self.fs_path, name))
 
@@ -1141,7 +1147,7 @@ class MainWindow(QMainWindow):
             return
         if QMessageBox.question(
                 self, "Delete",
-                f"Delete {len(sel)} item(s) on the server? This cannot be undone.") != QMessageBox.Yes:
+                f"Delete {len(sel)} item(s) on the server? This cannot be undone.") != QMessageBox.StandardButton.Yes:
             return
         for e in sel:
             self.client.fs_delete(self.fs_ch, posixpath.join(self.fs_path, e["name"]))
@@ -1264,10 +1270,8 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     # Paint in the saved palette from the first frame to avoid a light flash.
     theme.set_palette(str(settings.get(settings.KEY_PALETTE, "light")))
     app.setStyleSheet(theme.stylesheet())
-    w = MainWindow(); w.show(); sys.exit(app.exec_())
+    w = MainWindow(); w.show(); sys.exit(app.exec())

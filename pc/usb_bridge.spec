@@ -21,13 +21,13 @@ NAME = "USBBridge"
 # shrinks the bundle without touching anything the client imports (ui.py pulls in
 # QtCore / QtGui / QtWidgets only).
 excludes = [
-    "PyQt5.QtWebEngineCore", "PyQt5.QtWebEngineWidgets", "PyQt5.QtWebEngine",
-    "PyQt5.QtQml", "PyQt5.QtQuick", "PyQt5.QtQuickWidgets",
-    "PyQt5.QtMultimedia", "PyQt5.QtMultimediaWidgets",
-    "PyQt5.Qt3DCore", "PyQt5.Qt3DRender", "PyQt5.Qt3DAnimation", "PyQt5.Qt3DExtras",
-    "PyQt5.QtBluetooth", "PyQt5.QtNfc", "PyQt5.QtPositioning", "PyQt5.QtLocation",
-    "PyQt5.QtSensors", "PyQt5.QtSerialPort", "PyQt5.QtWebSockets", "PyQt5.QtWebChannel",
-    "PyQt5.QtSql", "PyQt5.QtTest", "PyQt5.QtDesigner", "PyQt5.QtHelp",
+    "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineQuick",
+    "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtQuickWidgets",
+    "PyQt6.QtMultimedia", "PyQt6.QtMultimediaWidgets",
+    "PyQt6.Qt3DCore", "PyQt6.Qt3DRender", "PyQt6.Qt3DAnimation", "PyQt6.Qt3DExtras",
+    "PyQt6.QtBluetooth", "PyQt6.QtNfc", "PyQt6.QtPositioning", "PyQt6.QtLocation",
+    "PyQt6.QtSensors", "PyQt6.QtSerialPort", "PyQt6.QtWebSockets", "PyQt6.QtWebChannel",
+    "PyQt6.QtSql", "PyQt6.QtTest", "PyQt6.QtDesigner", "PyQt6.QtHelp",
     "tkinter", "matplotlib", "numpy", "scipy", "pandas", "PIL",
 ]
 

@@ -31,7 +31,7 @@ Build a client on the PC side that communicates with a phone-side service over U
 
 | Dimension | Requirement |
 |---|---|
-| Platform | PC: Windows/Linux/macOS + Python 3.8+ + PyQt5 + adb(platform-tools); Phone: minSdk 24 (Android 7.0), Android 8.0 (API 26)+ recommended (foreground service notification channel) |
+| Platform | PC: Windows/Linux/macOS + Python 3.9+ + PyQt6 + adb(platform-tools); Phone: minSdk 24 (Android 7.0), Android 8.0 (API 26)+ recommended (foreground service notification channel) |
 | File size | Single file ≤ 2GB (streamed in 256KB chunks, never loading the whole file into memory) |
 | Concurrency | One PC connection at a time; within a connection, text/file/remote channels are available concurrently |
 | Disconnect policy | No automatic reconnect; a disconnect only cleans up + notifies, and the user reconnects manually |
@@ -66,14 +66,14 @@ The most reliable way to carry USB communication at the application layer is **A
 ```
 ┌────────────┐  adb forward   ┌──────────────────┐  Network(WiFi/cellular)  ┌────────────┐
 │ PC client  │◄────USB───────►│ Phone Bridge svc │◄────────────────────────►│  Remote    │
-│  (PyQt5)   │ 127.0.0.1:12580│ 127.0.0.1:9999   │      SSH (JSch)          │  server    │
+│  (PyQt6)   │ 127.0.0.1:12580│ 127.0.0.1:9999   │      SSH (JSch)          │  server    │
 └────────────┘ = phone:9999   └──────────────────┘                          │  sshd:22   │
                                                                             └────────────┘
 ```
 
 - **Features 1/2 (bidirectional)**: PC ↔ phone files and text share **the same established TCP connection** in both directions (the protocol itself is full-duplex);
   the phone does not need to connect back to the PC, and **does not need `adb reverse`** — the phone holds the socket returned by `accept()` and simply sends on it.
-- **Feature 3 (product path)**: SSH profiles, MFA, and host trust live **on the phone**. The phone starts/stops long-lived sessions in `ConnectionHub` (survive USB disconnect). The PC lists running connection IDs and **attaches by ID**; interactive I/O uses `REMOTE_DATA` / `REMOTE_OUTPUT` with a pyte terminal. The PC never receives SSH secrets. Legacy credential-bearing `REMOTE_OPEN` from the PC is retained in the protocol for internal/legacy use but is not the product UI path.
+- **Feature 3 (product path)**: SSH profiles, MFA, and host trust live **on the phone**. The phone starts/stops long-lived sessions in `ConnectionHub` (survive USB disconnect). The PC lists running connection IDs and **attaches by ID**; interactive I/O uses `REMOTE_DATA` / `REMOTE_OUTPUT` with a pyte-backed native terminal view. The PC never receives SSH secrets. Legacy credential-bearing `REMOTE_OPEN` from the PC is retained in the protocol for internal/legacy use but is not the product UI path.
 - The phone-side listening port is bound to the **loopback address**, and connections arriving via `adb forward` are treated as the only trusted source, with a second token check (see §7).
 
 ## 3. Custom Application-Layer Protocol (identical on both ends)
@@ -144,7 +144,7 @@ When both directions transfer files at the same time, the `FILE_*` `id` and the 
 Dependency list `requirements.txt`:
 
 ```
-PyQt5>=5.15
+PyQt6==6.8.1
 ```
 
 You also need [adb](https://developer.android.com/tools/releases/platform-tools) installed and on PATH (`adb version` working is enough; there is no hard minimum version).
@@ -428,12 +428,12 @@ class PhoneClient:
             self.on_status and self.on_status(f"[Handler exception] {e}")
 ```
 
-### `ui.py` (PyQt5 UI, three tabs for the three features)
+### `ui.py` (PyQt6 UI, three tabs for the three features)
 
 ```python
 import sys
-from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QComboBox, QPushButton, QLabel, QTabWidget, QPlainTextEdit,
     QLineEdit, QProgressBar, QFileDialog, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView, QCheckBox)
@@ -1377,7 +1377,7 @@ class MainActivity : AppCompatActivity() {
 | Item | Notes |
 |---|---|
 | **Serial session** | Within a single connection, `FILE_*`/`TEXT` are handled synchronously in the same read loop, so text messages are delayed while a large file is being written (nothing is lost; TCP provides backpressure). To decouple them completely, file writes could also be handed to a separate queue thread |
-| **Remote terminal** | Product path: phone-managed hub + PC attach-by-ID + **pyte** interactive terminal (raw keys, 120×30 PTY). Still not full truecolor / every VT quirk; window-size negotiate is deferred. Sessions outlive USB; Stop on phone ends SSH |
+| **Remote terminal** | Product path: phone-managed hub + PC attach-by-ID + **pyte-backed native Qt cell view** (raw keys, ANSI/256/truecolor, alt screen, scrollback, 120×30 PTY). Some VT quirks remain; window-size negotiate is deferred. Sessions outlive USB; Stop on phone ends SSH |
 | **Pseudo-terminal parameters** | `setPtySize(120, 30)` is already delivered; `setEnv("TERM", ...)` requires `AcceptEnv` on the target sshd, otherwise it is ignored, and `export TERM=xterm-256color` on the remote can serve as a fallback |
 | **Backpressure** | The phone's stdin pipe for `REMOTE_DATA` is 1MB; once full, the writing thread blocks (blocking only the remote channel queue, not text/file/heartbeat); unbounded fast input can still pile up, so switch to a bounded queue + drop policy if needed |
 | **Remote file explorer** | Implemented (F12): `FS_*` protocol family (0x50–0x5F) + phone-opened `ChannelSftp` + bounded 4 MiB upload queue (overflow → that upload fails with `buffer overflow`) + per-download stream threads + listing caps (400 entries / 40 KiB names, 16-bit headerLen) + `ACK {fs_id}` upload completion. The SFTP channel is binding-lifetime (closes on USB disconnect); the shell survives. JSch `ls()` may itself truncate very large directories (~100–200 entries per READDIR batch) — surfaced as a truncated-listing notice |

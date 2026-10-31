@@ -3,8 +3,8 @@
 The connection form lives here rather than in the window so the terminal gets
 the vertical space instead.
 """
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                              QPushButton, QVBoxLayout)
 
@@ -66,7 +66,7 @@ class ConnectionDialog(QDialog):
 
         self.ed_token = QLineEdit()
         self.ed_token.setPlaceholderText("8 hex digits shown on the phone")
-        self.ed_token.setEchoMode(QLineEdit.Password)
+        self.ed_token.setEchoMode(QLineEdit.EchoMode.Password)
         self.btn_show = QPushButton("Show")
         self.btn_show.setCheckable(True)
         self.btn_show.setFixedWidth(58)
@@ -112,7 +112,7 @@ class ConnectionDialog(QDialog):
         outer.addLayout(form)
 
         self.pill = theme.connection_pill()
-        outer.addWidget(self.pill, 0, Qt.AlignLeft)
+        outer.addWidget(self.pill, 0, Qt.AlignmentFlag.AlignLeft)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(theme.SPACE_S)
@@ -194,7 +194,7 @@ class ConnectionDialog(QDialog):
             self.adb_path_changed.emit()
 
     def _toggle_token(self, shown: bool):
-        self.ed_token.setEchoMode(QLineEdit.Normal if shown else QLineEdit.Password)
+        self.ed_token.setEchoMode(QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
         self.btn_show.setText("Hide" if shown else "Show")
 
     def _copy_fingerprint(self):

@@ -7,10 +7,11 @@ import subprocess
 import sys
 import time
 
-from PyQt5.QtCore import QRect, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QFontMetrics
-from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QHeaderView, QLabel,
-                             QScrollArea, QTableWidget, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout,
+                             QHeaderView, QLabel, QScrollArea, QTableWidget,
+                             QVBoxLayout, QWidget)
 
 import theme
 from theme import BUBBLE_MAX_FRACTION, SPACE_M, SPACE_S, SPACE_XS
@@ -25,8 +26,8 @@ class MessageLog(QScrollArea):
         super().__init__(parent)
         self.setObjectName("messageLog")
         self.setWidgetResizable(True)
-        self.setFrameShape(QFrame.NoFrame)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._body = QWidget()
         self._body.setObjectName("messageBody")
@@ -36,7 +37,7 @@ class MessageLog(QScrollArea):
 
         self._empty = QLabel(self.EMPTY_TEXT)
         self._empty.setProperty("role", "emptyState")
-        self._empty.setAlignment(Qt.AlignCenter)
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
         self._lay.addWidget(self._empty)
         self._lay.addStretch(1)
@@ -59,12 +60,12 @@ class MessageLog(QScrollArea):
         body = QLabel(text)
         body.setObjectName("bubbleText")
         body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._bodies.append((body, text))
 
         stamp = QLabel(time.strftime("%H:%M", time.localtime(at)))
         stamp.setObjectName("bubbleTime")
-        stamp.setAlignment(Qt.AlignRight)
+        stamp.setAlignment(Qt.AlignmentFlag.AlignRight)
 
         bv.addWidget(body)
         bv.addWidget(stamp)
@@ -92,7 +93,7 @@ class MessageLog(QScrollArea):
         self._empty.setVisible(False)
         label = QLabel(text)
         label.setProperty("role", "emptyState")
-        label.setAlignment(Qt.AlignCenter)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setWordWrap(True)
         stick = self._at_bottom()
         self._lay.insertWidget(self._lay.count() - 1, label)
@@ -127,7 +128,7 @@ class MessageLog(QScrollArea):
         """
         metrics = QFontMetrics(body.font())
         natural = metrics.boundingRect(
-            QRect(0, 0, 100000, 100000), Qt.TextWordWrap, text).width()
+            QRect(0, 0, 100000, 100000), Qt.TextFlag.TextWordWrap, text).width()
         body.setFixedWidth(min(natural, self._max_bubble_width()) + 2)
 
     def _at_bottom(self) -> bool:
@@ -159,30 +160,30 @@ class FileDropTable(QTableWidget):
         self.setAcceptDrops(True)
         self.setDropIndicatorShown(True)
         self.setShowGrid(False)
-        self.setSelectionBehavior(QTableWidget.SelectRows)
-        self.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         # Elide long paths rather than wrapping: wrapping makes rows uneven.
         self.setWordWrap(False)
         self.verticalHeader().setVisible(False)
         self.setHorizontalHeaderLabels(self.COLUMNS)
 
         head = self.horizontalHeader()
-        head.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        head.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         # Only the name column absorbs slack; two stretched columns would split it
         # evenly and leave the progress/status cells stranded mid-table.
-        head.setSectionResizeMode(0, QHeaderView.Stretch)
-        head.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        head.setSectionResizeMode(2, QHeaderView.Fixed)
-        head.setSectionResizeMode(3, QHeaderView.Interactive)
-        head.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        head.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        head.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        head.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        head.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.setColumnWidth(2, 130)
         self.setColumnWidth(3, 300)
 
         self._empty = QLabel(self.viewport())
         self._empty.setObjectName("fileEmpty")
-        self._empty.setAlignment(Qt.AlignCenter)
+        self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
-        self._empty.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._empty.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.apply_theme()
         self.refresh_empty_state()
 

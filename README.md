@@ -1,6 +1,6 @@
 # USB Bridge — Deployment and Usage Guide
 
-The PC client (Python + PyQt5) connects to the phone app (Android foreground service) over a USB cable and does four things:
+The PC client (Python + PyQt6) connects to the phone app (Android foreground service) over a USB cable and does four things:
 
 1. **Bidirectional file transfer** (PC ↔ phone, 256KB chunks + SHA256 verification)
 2. **Bidirectional text messaging**
@@ -9,7 +9,8 @@ The PC client (Python + PyQt5) connects to the phone app (Android foreground ser
 
 See [prd.md](./prd.md) for design details and [PROTOCOL.md](./PROTOCOL.md) for the
 normative PC ↔ Android protocol specification (frame grammar, message API,
-error codes, and feature flows).
+error codes, and feature flows). [docs/](./docs/) holds the terminal fix plan
+and the Qt 6 migration assessment.
 
 ---
 
@@ -19,15 +20,19 @@ error codes, and feature flows).
 app-demo-6/
 ├── prd.md                    Design document (protocol, architecture, acceptance criteria)
 ├── pc/                       PC-side client
-│   ├── ui.py                 Entry point: PyQt5 UI (start it from this directory)
+│   ├── ui.py                 Entry point: PyQt6 UI (start it from this directory)
 │   ├── client.py             Business logic: text/files/conn attach/heartbeat
-│   ├── terminal.py           Interactive pyte terminal widget
+│   ├── terminal.py           Public terminal widget (native cell view)
+│   ├── terminal_view.py      QAbstractScrollArea/QPainter terminal renderer
+│   ├── terminal_model.py     pyte DualScreen, modes and styled runs
+│   ├── terminal_keys.py      Qt key event -> VT byte encoder
+│   ├── terminal_qplain.py    Previous QPlainTextEdit implementation (fallback)
 │   ├── identity.py           Persistent PC keypair (fingerprint; private key never shown)
 │   ├── link_crypto.py        P-256 ECDH + HKDF + AES-GCM frame sealing
 │   ├── protocol.py           Frame encode/decode (byte order matches the Android side)
 │   ├── transport.py          TCP send/receive (+ post-HELLO seal)
 │   ├── adb_manager.py        adb device listing and port forwarding
-│   ├── requirements.txt      Dependencies (PyQt5, pyte, cryptography)
+│   ├── requirements.txt      Dependencies (PyQt6, pyte, cryptography)
 │   ├── usb_bridge.spec       PyInstaller spec (build a standalone executable)
 │   └── downloads/            Files sent from the phone land here (created on first run)
 └── android/                  Android project (open this directory in Android Studio)
@@ -51,7 +56,7 @@ app-demo-6/
 
 | Side | Requirement |
 |---|---|
-| PC | Windows / Linux / macOS; Python 3.8+; PyQt5; `adb` (Android platform-tools) must be on PATH |
+| PC | Windows / Linux / macOS; Python 3.9+; PyQt6; `adb` (Android platform-tools) must be on PATH |
 | Phone | Android 7.0 (API 24) or later, Android 8.0+ recommended; "Developer options → USB debugging" enabled |
 | Android build | Android Studio (bundles JDK 17); AGP 8.1.4 / Gradle 8.2 |
 
@@ -77,7 +82,7 @@ Grant notification permission (a dialog appears on first launch). Denying it sti
 
 ```bash
 cd pc
-pip install -r requirements.txt      # PyQt5 + pyte + cryptography
+pip install -r requirements.txt      # PyQt6 + pyte + cryptography
 ```
 
 If `python` is not available on the command line (Windows with only the py launcher), use:
@@ -156,7 +161,7 @@ SSH secrets never leave the phone. Workflow:
 1. On the phone: **SSH Connections** → Add a profile (`ID_01`…) with host/user/password and/or private key (**PEM or OpenSSH**, including ed25519 — pick file or paste). Check **MFA** if the server uses Google Authenticator / keyboard-interactive.
 2. Tap **Start** on that profile. First-time host keys: confirm the fingerprint dialog on the phone. MFA codes are entered on the phone when prompted.
 3. On the PC (USB connected): Remote Terminal → **Refresh list** → select a **running** ID → **Attach**.
-4. Use the interactive terminal (raw keys, ANSI via pyte — suitable for shell scripts, `vim`/`nano`, etc.). **Detach** leaves the phone SSH session running; **Stop** on the phone ends it.
+4. Use the interactive terminal (raw keys, ANSI colours via pyte and the native Qt view — suitable for shell scripts, `vim`/`nano`, etc.). **Detach** leaves the phone SSH session running; **Stop** on the phone ends it.
 
 USB disconnect does **not** stop phone SSH sessions. PC never receives passwords or private keys.
 
@@ -237,7 +242,7 @@ The SFTP channel lives only while the PC is connected: a USB disconnect closes i
 - USB/`adb forward` only; not designed as a Wi‑Fi/LAN transport.
 - Link encryption starts after HELLO/ACK; HELLO (including token) is cleartext on loopback.
 - Does not defend against a compromised PC OS or covert screen recording.
-- Interactive terminal uses pyte (120×30 PTY); advanced truecolor / every terminal quirk is not guaranteed.
+- Interactive terminal uses pyte for VT parsing and a native Qt cell renderer for colours/scrollback (120×30 PTY); remaining gaps and the fix plan are in [docs/terminal-fix-plan.md](./docs/terminal-fix-plan.md).
 - One PC attach per running connection ID; profiles are not synced to the PC.
 - No resume-after-interruption, no parallel multi-device support, no directory browsing; the PC connects to only one device at a time.
 - Within a connection, file transfer and text share one TCP stream, so text lags while a large file is in flight.

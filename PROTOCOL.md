@@ -1,7 +1,7 @@
 # USB Bridge — PC ↔ Android Protocol Specification
 
 Normative description of the application-layer protocol between the PC client
-(`pc/`, Python + PyQt5) and the Android app (`android/`, Kotlin). This document
+(`pc/`, Python + PyQt6) and the Android app (`android/`, Kotlin). This document
 reflects the current implementation (HELLO `version: 2`). The reference
 implementations are `pc/protocol.py` + `pc/transport.py` and
 `android/.../FrameIO.kt` + `BridgeService.kt`; both must mirror each other
