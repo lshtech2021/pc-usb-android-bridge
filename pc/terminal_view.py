@@ -19,6 +19,7 @@ from PyQt6.QtGui import (
     QKeyEvent,
     QKeySequence,
     QPainter,
+    QShortcut,
 )
 from PyQt6.QtWidgets import QAbstractScrollArea, QApplication, QFrame, QMenu
 
@@ -98,9 +99,21 @@ class TerminalWidget(QAbstractScrollArea):
         self.viewport().setMouseTracking(True)
         self.viewport().setAutoFillBackground(False)
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
-        self.viewport().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.viewport().customContextMenuRequested.connect(self._context_menu)
+        self.viewport().setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+        self.viewport().installEventFilter(self)
         self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, True)
+
+        # Keep copy/paste working even if a future event path consumes the key
+        # before keyPressEvent. WidgetWithChildren keeps these scoped to the
+        # terminal, so the message/file inputs keep their normal clipboard.
+        for sequence, slot in (
+            ("Ctrl+Shift+C", self.copy),
+            ("Ctrl+Insert", self.copy),
+            ("Ctrl+Shift+V", self._paste_clipboard),
+            ("Shift+Insert", self._paste_clipboard),
+        ):
+            shortcut = QShortcut(QKeySequence(sequence), self, activated=slot)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
 
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
         self.horizontalScrollBar().valueChanged.connect(
@@ -833,6 +846,17 @@ class TerminalWidget(QAbstractScrollArea):
     # ------------------------------------------------------------------
     # Context menu
     # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):
+        if obj is self.viewport() and event.type() == QEvent.Type.ContextMenu:
+            self._context_menu(event.pos())
+            return True
+        return super().eventFilter(obj, event)
+
+    def contextMenuEvent(self, event):
+        pos = self.viewport().mapFrom(self, event.pos())
+        self._context_menu(pos)
+        event.accept()
+
     def _context_menu(self, pos):
         if self._mouse_reporting() and not (
                 QApplication.keyboardModifiers()

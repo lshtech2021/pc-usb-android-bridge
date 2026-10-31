@@ -5,7 +5,13 @@ import tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PyQt6.QtGui import QInputMethodEvent, QKeyEvent, QMouseEvent
+from PyQt6.QtGui import (
+    QContextMenuEvent,
+    QInputMethodEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QShortcut,
+)
 from PyQt6.QtWidgets import QApplication
 
 import theme
@@ -216,6 +222,28 @@ def test_context_menu_actions():
         w._context_menu(QPoint(0, 0))
     finally:
         terminal_view.QMenu.exec = original
+    w.close()
+
+
+def test_context_menu_event_and_shortcuts():
+    import terminal_view
+
+    w = make_widget()
+    feed(w, b"hello")
+    assert len(w.findChildren(QShortcut)) >= 4
+    called = []
+    original = terminal_view.QMenu.exec
+    terminal_view.QMenu.exec = lambda menu, *a, **k: called.append(menu)
+    try:
+        pos = QPoint(20, 20)
+        event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse, pos,
+            w.viewport().mapToGlobal(pos))
+        QApplication.sendEvent(w.viewport(), event)
+        _APP.processEvents()
+    finally:
+        terminal_view.QMenu.exec = original
+    assert called, "right-click must open the terminal context menu"
     w.close()
 
 
