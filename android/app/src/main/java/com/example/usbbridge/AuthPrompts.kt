@@ -7,7 +7,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.text.method.ScrollingMovementMethod
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -55,7 +57,14 @@ object AuthPrompts {
         cm.setPrimaryClip(ClipData.newPlainText(label, text))
     }
 
-    fun promptText(title: String, message: String, hint: String = ""): String? {
+    fun promptText(
+        title: String,
+        message: String,
+        hint: String = "",
+        numeric: Boolean = false,
+        secret: Boolean = false,
+        stripCode: Boolean = false
+    ): String? {
         val act = currentActivity() ?: return null
         val result = AtomicReference<String?>(null)
         val latch = CountDownLatch(1)
@@ -64,26 +73,50 @@ object AuthPrompts {
                 val input = EditText(act).apply {
                     this.hint = hint
                     setSingleLine()
+                    inputType = when {
+                        numeric -> InputType.TYPE_CLASS_NUMBER
+                        secret -> InputType.TYPE_CLASS_TEXT or
+                            InputType.TYPE_TEXT_VARIATION_PASSWORD
+                        else -> InputType.TYPE_CLASS_TEXT
+                    }
                 }
                 val box = LinearLayout(act).apply {
                     orientation = LinearLayout.VERTICAL
                     setPadding(48, 24, 48, 0)
                     addView(TextView(act).apply { text = message })
                     addView(input)
+                    if (secret) {
+                        addView(CheckBox(act).apply {
+                            setText("Show password")
+                            setOnCheckedChangeListener { _, checked ->
+                                setPasswordVisible(input, checked)
+                            }
+                        })
+                    }
                 }
-                AlertDialog.Builder(act)
+                val dialog = AlertDialog.Builder(act)
                     .setTitle(title)
                     .setView(box)
                     .setCancelable(false)
                     .setPositiveButton("OK") { _, _ ->
-                        result.set(input.text?.toString())
+                        val raw = input.text?.toString()
+                        result.set(if (stripCode) normalizeCode(raw) else raw)
                         latch.countDown()
                     }
                     .setNegativeButton("Cancel") { _, _ ->
                         result.set(null)
                         latch.countDown()
                     }
-                    .show()
+                    .create()
+                // Dismissed by the system (e.g. the activity was destroyed while the
+                // user was in the authenticator app): release the waiting SSH thread.
+                dialog.setOnDismissListener {
+                    if (latch.count > 0L) {
+                        result.set(null)
+                        latch.countDown()
+                    }
+                }
+                dialog.show()
             } catch (_: Exception) {
                 result.set(null)
                 latch.countDown()
@@ -91,6 +124,32 @@ object AuthPrompts {
         }
         latch.await(5, TimeUnit.MINUTES)
         return result.get()
+    }
+
+    private fun setPasswordVisible(field: EditText, visible: Boolean) {
+        val start = field.selectionStart
+        val end = field.selectionEnd
+        field.inputType = if (visible) {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        } else {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        field.setSelection(start.coerceAtLeast(0), end.coerceAtLeast(0))
+    }
+
+    /** Authenticator apps show "123 456" and Chinese IMEs can emit full-width
+     *  digits; servers expect the bare ASCII six-digit code. */
+    private fun normalizeCode(raw: String?): String {
+        if (raw == null) return ""
+        val sb = StringBuilder(raw.length)
+        for (ch in raw) {
+            val c = when (ch) {
+                in '０'..'９' -> '0' + (ch - '０')
+                else -> ch
+            }
+            if (!c.isWhitespace()) sb.append(c)
+        }
+        return sb.toString()
     }
 
     fun promptYesNo(title: String, message: String): Boolean {

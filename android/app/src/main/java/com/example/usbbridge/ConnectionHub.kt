@@ -1,6 +1,7 @@
 package com.example.usbbridge
 
 import android.content.Context
+import android.util.Log
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.HostKeyRepository
 import com.jcraft.jsch.JSchException
@@ -21,6 +22,7 @@ object ConnectionHub {
     const val STATE_RUNNING = "running"
     const val STATE_ERROR = "error"
 
+    private const val TAG = "ConnectionHub"
     private const val RING_MAX = 64 * 1024
 
     data class Attach(
@@ -258,22 +260,56 @@ object ConnectionHub {
         val store = TofuHostKeys.storeFile(ctx)
         fun attempt(approved: String?): RemoteSession {
             val keys = TofuHostKeys(store, approved)
+            var codePrompts = 0
             val bridge = object : RemoteSession.AuthBridge {
-                override fun askPassword(message: String): String? =
-                    AuthPrompts.promptText("SSH password", message, "password")
+                override fun askPassword(message: String): String? {
+                    Log.i(TAG, "showing SSH password dialog")
+                    val answer = AuthPrompts.promptText(
+                        "SSH password", message, "password", secret = true)
+                    Log.i(TAG, "SSH password dialog answered chars=${answer?.length ?: -1}")
+                    return answer
+                }
+                override fun askPassphrase(message: String): String? =
+                    AuthPrompts.promptText("Key passphrase", message, "passphrase", secret = true)
                 override fun askKeyboardInteractive(
                     destination: String, name: String, instruction: String,
                     prompt: Array<String>, echo: BooleanArray
                 ): Array<String>? {
                     val out = Array(prompt.size) { "" }
                     for (i in prompt.indices) {
-                        val ans = AuthPrompts.promptText(
-                            if (profile.mfa) "MFA / Authenticator" else "SSH challenge",
-                            listOf(destination, name, instruction, prompt[i])
-                                .filter { it.isNotBlank() }.joinToString("\n"),
-                            if (echo.getOrElse(i) { true }) "response" else "code")
-                            ?: return null
-                        out[i] = ans
+                        val message = listOf(destination, name, instruction, prompt[i])
+                            .filter { it.isNotBlank() }.joinToString("\n")
+                        when {
+                            AuthPromptText.isCode(prompt[i]) -> {
+                                codePrompts++
+                                val notice = if (codePrompts > 1) {
+                                    "\n\nThe server rejected the previous attempt. " +
+                                        "Enter the newest code from the authenticator."
+                                } else ""
+                                Log.i(TAG, "showing verification-code dialog (round=$codePrompts)")
+                                out[i] = AuthPrompts.promptText(
+                                    "MFA / Authenticator",
+                                    message + notice,
+                                    "code",
+                                    numeric = true,
+                                    stripCode = true
+                                ) ?: return null
+                                Log.i(TAG, "verification-code dialog answered chars=${out[i].length}")
+                            }
+                            AuthPromptText.isPassword(prompt[i]) ->
+                                // RemoteSession normally answers these itself;
+                                // keep a correctly labelled dialog as a fallback.
+                                out[i] = AuthPrompts.promptText(
+                                    "SSH password", message, "password", secret = true
+                                ) ?: return null
+                            else ->
+                                out[i] = AuthPrompts.promptText(
+                                    if (profile.mfa) "MFA / Authenticator" else "SSH challenge",
+                                    message,
+                                    if (echo.getOrElse(i) { true }) "response" else "",
+                                    secret = !echo.getOrElse(i) { true }
+                                ) ?: return null
+                        }
                     }
                     return out
                 }
