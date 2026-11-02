@@ -144,8 +144,8 @@ Caveats for a packaged build:
 
 ### Messages (Tab 1)
 
-Type in the input box and press Enter to send; `[PC] xxx` is sent from this machine and `[Phone] xxx` came from the phone; when the phone receives PC text it raises a notification-bar alert.
-To send text from the phone: type the content in the app → "Send text to PC" (**the PC must be connected first**, otherwise there is no receiver).
+Type in the multi-line input box and press Ctrl+Enter to send (Enter adds a new line); `[PC] xxx` is sent from this machine and `[Phone] xxx` came from the phone; when the phone receives PC text it raises a notification-bar alert.
+To send text from the phone: type the content in the composer (it grows up to six lines; Enter adds a line, the send button sends) (**the PC must be connected first**, otherwise there is no receiver).
 
 ### Files (Tab 2)
 

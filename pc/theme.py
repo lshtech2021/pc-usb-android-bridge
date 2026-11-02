@@ -184,7 +184,7 @@ QLabel[role="emptyState"], #fileEmpty { color: $text_faint; }
 QFrame[role="vsep"] { background: $border_soft; }
 
 /* Inputs */
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QPlainTextEdit#msgInput {
     background: $surface;
     border: 1px solid $border;
     border-radius: 6px;
@@ -193,8 +193,10 @@ QLineEdit, QComboBox {
     selection-background-color: $accent;
     selection-color: $on_accent;
 }
-QLineEdit:focus, QComboBox:focus { border-color: $accent; }
-QLineEdit:disabled, QComboBox:disabled { background: $canvas; color: $text_faint; }
+QLineEdit:focus, QComboBox:focus, QPlainTextEdit#msgInput:focus { border-color: $accent; }
+QLineEdit:disabled, QComboBox:disabled, QPlainTextEdit#msgInput:disabled {
+    background: $canvas; color: $text_faint;
+}
 QComboBox::drop-down { border: none; width: 20px; }
 QComboBox QAbstractItemView {
     background: $surface;

@@ -8,9 +8,11 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.text.InputType
 import android.text.format.DateFormat
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -392,6 +394,15 @@ class MainActivity : AppCompatActivity() {
             setHint(R.string.hint_send_text)
             // The bar itself is the field's container, so drop the default underline.
             background = null
+            // Multi-line composer: Enter inserts a line break; the send button sends.
+            inputType = InputType.TYPE_CLASS_TEXT or
+                InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+                InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            setSingleLine(false)
+            minLines = 1
+            maxLines = 6
+            imeOptions = EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_ENTER_ACTION
+            gravity = Gravity.TOP or Gravity.START
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         return LinearLayout(this).apply {

@@ -58,6 +58,7 @@ SHORTCUTS = [
     ("F5", "Refresh the USB device list"),
     ("Ctrl+K", "Connect to the selected device"),
     ("Ctrl+R", "Refresh the phone's SSH connection list"),
+    ("Enter", "Add a new line in the message box"),
     ("Ctrl+Enter", "Send the typed message"),
     ("F11", "Toggle full-screen terminal"),
     ("Escape", "Leave full screen (when no session is attached)"),
@@ -197,7 +198,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self._build_menus()
         self.statusBar().setSizeGripEnabled(False)
-        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self.send_text)
+        # Ctrl+Enter is handled by MessageInput itself so it only fires while
+        # composing (and cannot double-send together with a window shortcut).
         QShortcut(QKeySequence("Ctrl+,"), self, activated=self.open_connection_dialog)
 
         self._restore_window_state()
@@ -581,9 +583,8 @@ class MainWindow(QMainWindow):
         self.msg_log = widgets.MessageLog()
         h = QHBoxLayout()
         h.setSpacing(theme.SPACE_S)
-        self.msg_input = QLineEdit()
-        self.msg_input.setPlaceholderText("Type a message and press Enter")
-        self.msg_input.returnPressed.connect(self.send_text)
+        self.msg_input = widgets.MessageInput()
+        self.msg_input.sendRequested.connect(self.send_text)
         self.btn_send = QPushButton("Send")
         self.btn_send.setProperty("variant", "primary")
         self.btn_send.setToolTip("Send to the phone (Ctrl+Enter)")
@@ -604,7 +605,7 @@ class MainWindow(QMainWindow):
         self._flash(self.btn_copy_all, "Copy all", "Copied")
 
     def send_text(self):
-        t = self.msg_input.text().strip()
+        t = self.msg_input.toPlainText().strip()
         if t and self.client.tp and self.client.tp.alive:
             self.client.send_text(t)
             self.msg_log.add_message(t, from_me=True)

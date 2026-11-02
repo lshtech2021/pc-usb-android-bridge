@@ -10,11 +10,35 @@ import time
 from PyQt6.QtCore import QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout,
-                             QHeaderView, QLabel, QScrollArea, QTableWidget,
-                             QVBoxLayout, QWidget)
+                             QHeaderView, QLabel, QPlainTextEdit, QScrollArea,
+                             QTableWidget, QVBoxLayout, QWidget)
 
 import theme
 from theme import BUBBLE_MAX_FRACTION, SPACE_M, SPACE_S, SPACE_XS
+
+
+class MessageInput(QPlainTextEdit):
+    """Multi-line chat composer: Enter inserts a line break, Ctrl+Enter sends."""
+
+    sendRequested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("msgInput")
+        self.setPlaceholderText("Type a message — Ctrl+Enter to send")
+        self.setTabChangesFocus(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Three text lines; longer messages scroll inside the composer.
+        self.setFixedHeight(self.fontMetrics().lineSpacing() * 3 + 24)
+
+    def keyPressEvent(self, event):
+        if (event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self.sendRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class MessageLog(QScrollArea):
