@@ -12,6 +12,10 @@ import com.jcraft.jsch.UserInfo
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.OutputStream
 import java.security.Security
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -29,6 +33,16 @@ class RemoteSession(
     @Volatile private var stdinOut: OutputStream? = null
     private val stdinLock = Any()
     private val dead = AtomicBoolean(false)
+
+    /** Serial, bounded stdin writer. SSH flow control can block a write for a long time
+     *  (Ctrl+S, a stopped shell); that must never block the bridge read loop or the
+     *  remoteOps queue that also carries attach/SFTP work. Single thread keeps PC input
+     *  ordering; a full queue means the session is unusable, so it is closed. */
+    private val stdinExec = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        ArrayBlockingQueue(STDIN_QUEUE_CAPACITY),
+        { r -> Thread(r, "ssh-stdin").apply { isDaemon = true } }
+    )
 
     data class Auth(
         val password: String?,
@@ -96,6 +110,12 @@ class RemoteSession(
                 auth.passphrase?.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8))
         }
         val s = jsch.getSession(user, host, port)
+        // A phone network that silently drops the idle TCP flow (NAT/firewall timeout)
+        // otherwise leaves `isConnected` true forever: no data flows, but the hub and
+        // UI still advertise the session as running. Keepalives detect that and let
+        // watchClose clear the state (PC receives REMOTE_CLOSE).
+        s.setServerAliveInterval(15_000)
+        s.setServerAliveCountMax(3)
         auth.password?.takeIf { it.isNotEmpty() }?.let { s.setPassword(it) }
         s.setConfig("StrictHostKeyChecking", "yes")
         // Match modern OpenSSH preference: ed25519 host key first (same SHA256 as `ssh -vvv`)
@@ -218,31 +238,42 @@ class RemoteSession(
     }
 
     /**
-     * Write PC input to the SSH channel.
+     * Queue PC input for the SSH channel.
      *
-     * Returns false when the session is already gone and never throws: a write failure
-     * marks the session dead so ConnectionHub can detach and tell the PC. An exception
-     * escaping here used to kill the whole app, because it ran on the remoteOps worker
-     * thread whose uncaught-exception handler is Android's process killer.
+     * Returns false when the session is gone or its stdin backlog is saturated, so the
+     * caller can detach and tell the PC. Writes themselves run on [stdinExec]: an SSH
+     * write can block on flow control, and it must not stall the remoteOps queue or the
+     * USB read loop. Write failures mark the session dead, which clears the hub state
+     * and sends REMOTE_CLOSE. This never throws: an exception escaping here used to be
+     * thrown on a ThreadPoolExecutor worker, whose uncaught handler kills the process.
      */
     fun writeStdin(data: ByteArray): Boolean {
-        var ok = false
+        if (dead.get()) return false
+        return try {
+            stdinExec.execute { writeNow(data) }
+            true
+        } catch (_: RejectedExecutionException) {
+            // Queue full (or shutdown in progress): the session can no longer accept
+            // input in bounded time. Close it instead of dropping keystrokes silently.
+            Log.w(TAG, "stdin queue full, closing session")
+            markDead(0, "stdin backlog")
+            false
+        }
+    }
+
+    private fun writeNow(data: ByteArray) {
         synchronized(stdinLock) {
             val ch = channel
             val out = stdinOut
-            if (dead.get() || ch == null || out == null || !ch.isConnected || ch.isClosed) {
-                return@synchronized
-            }
+            if (dead.get() || ch == null || out == null || !ch.isConnected || ch.isClosed) return
             try {
                 out.write(data)
                 out.flush()
-                ok = true
             } catch (e: Exception) {
                 Log.w(TAG, "stdin write failed: ${e.message}")
                 markDead(0, "stdin write failed: ${e.message}")
             }
         }
-        return ok
     }
 
     fun isAlive(): Boolean = !dead.get() && channel?.isConnected == true
@@ -259,6 +290,7 @@ class RemoteSession(
     /** Single-shot teardown; [notifyHub] is false when the caller updates hub state itself. */
     private fun shutdown(notifyHub: Boolean, code: Int = 0, reason: String = "") {
         if (!dead.compareAndSet(false, true)) return
+        runCatching { stdinExec.shutdownNow() }
         runCatching { stdinOut?.close() }
         runCatching { channel?.disconnect() }
         runCatching { session?.disconnect() }
@@ -268,6 +300,7 @@ class RemoteSession(
 
     companion object {
         private const val TAG = "RemoteSession"
+        private const val STDIN_QUEUE_CAPACITY = 128
 
         @Volatile private var loggerReady = false
 

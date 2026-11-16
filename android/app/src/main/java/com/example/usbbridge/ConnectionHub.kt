@@ -45,7 +45,9 @@ object ConnectionHub {
         @Volatile var lastError: String? = null,
         val ring: ByteArrayOutputStream = ByteArrayOutputStream(),
         @Volatile var attach: Attach? = null,
-        @Volatile var fs: FsBind? = null
+        @Volatile var fs: FsBind? = null,
+        /** Bumped by every start(); a late connect result must not publish over a newer attempt. */
+        @Volatile var startGen: Int = 0
     )
 
     private val lives = ConcurrentHashMap<String, Live>()
@@ -102,6 +104,7 @@ object ConnectionHub {
             return
         }
         val live = lives.getOrPut(id) { Live(id) }
+        var gen = 0
         synchronized(lock) {
             if (live.state == STATE_RUNNING || live.state == STATE_STARTING) {
                 AuthPrompts.toast(ctx, "$id already ${live.state}")
@@ -109,24 +112,55 @@ object ConnectionHub {
             }
             live.state = STATE_STARTING
             live.lastError = null
+            gen = ++live.startGen
         }
         notifyListeners()
         startPool.execute {
+            var opened: RemoteSession? = null
+            var published = false
             try {
-                openWithTofu(ctx, profile, live)
-                synchronized(lock) {
-                    live.state = STATE_RUNNING
-                    live.lastError = null
+                // Publish atomically: the session may have died (or the user may have
+                // pressed Stop) while the handshake ran. Assigning live.session outside
+                // the lock used to leave a dead session advertised as RUNNING.
+                val newSession = openWithTofu(ctx, profile, live)
+                opened = newSession
+                val result = synchronized(lock) {
+                    when {
+                        // Stopped or superseded by a newer start: drop this attempt.
+                        live.startGen != gen || live.state != STATE_STARTING -> 0
+                        !newSession.isAlive() -> {
+                            live.state = STATE_ERROR
+                            live.lastError = "session closed during start"
+                            2
+                        }
+                        else -> {
+                            live.session = newSession
+                            live.state = STATE_RUNNING
+                            live.lastError = null
+                            1
+                        }
+                    }
                 }
-                AuthPrompts.toast(ctx, "$id connected")
+                when (result) {
+                    1 -> {
+                        published = true
+                        AuthPrompts.toast(ctx, "$id connected")
+                    }
+                    2 -> AuthPrompts.toast(ctx, "$id failed: ${live.lastError}")
+                    else -> newSession.close()          // stopped while connecting
+                }
             } catch (e: Exception) {
-                live.session?.close()
-                live.session = null
-                synchronized(lock) {
-                    live.state = STATE_ERROR
-                    live.lastError = e.message ?: e.javaClass.simpleName
+                if (!published) opened?.close()
+                val message = e.message ?: e.javaClass.simpleName
+                val failed = synchronized(lock) {
+                    if (live.startGen != gen || live.state != STATE_STARTING) false
+                    else {
+                        live.state = STATE_ERROR
+                        live.lastError = message
+                        true
+                    }
                 }
-                AuthPrompts.toast(ctx, "$id failed: ${live.lastError}")
+                if (failed) AuthPrompts.toast(ctx, "$id failed: $message")
             }
             notifyListeners()
         }
@@ -261,7 +295,11 @@ object ConnectionHub {
         return true
     }
 
-    private fun openWithTofu(ctx: Context, profile: ConnectionStore.Profile, live: Live) {
+    private fun openWithTofu(
+        ctx: Context,
+        profile: ConnectionStore.Profile,
+        live: Live
+    ): RemoteSession {
         val store = TofuHostKeys.storeFile(ctx)
         fun attempt(approved: String?): RemoteSession {
             val keys = TofuHostKeys(store, approved)
@@ -356,7 +394,7 @@ object ConnectionHub {
                 throw e
             }
         }
-        live.session = attempt(null)
+        return attempt(null)
     }
 
     private fun onOutput(live: Live, stream: String, data: ByteArray) {
