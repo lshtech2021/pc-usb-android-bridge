@@ -248,6 +248,28 @@ def socks_connect(proxy_port, host, port):
     return s
 
 
+def socks4_connect(proxy_port, host, port, use_4a=True):
+    """SOCKS4/4a CONNECT, the dialect Chrome uses for a Windows system proxy.
+
+    WinINET's SOCKS entry has no version field, so Chromium treats it as SOCKS4 and
+    falls back to SOCKS4a (hostname in the request) when it cannot resolve locally.
+    """
+    s = socket.create_connection(("127.0.0.1", proxy_port), timeout=10)
+    s.settimeout(DEADLINE)
+    if use_4a:
+        req = (b"\x04\x01" + struct.pack(">H", port) + b"\x00\x00\x00\x01"
+               + b"\x00" + host.encode() + b"\x00")       # USERID NUL, then hostname
+    else:
+        req = (b"\x04\x01" + struct.pack(">H", port) + socket.inet_aton(host)
+               + b"\x00")                                  # USERID NUL
+    s.sendall(req)
+    rep = recv_exact(s, 8)
+    if rep[1] != 0x5A:
+        s.close()
+        raise SocksRefused(rep[1])
+    return s
+
+
 def browse(proxy_port, echo_port, idx, failures):
     """One browser tab: several request/response rounds, then a half-closed request."""
     stage = "socks handshake"
@@ -388,7 +410,57 @@ def test_proxy_traffic_before_the_seal_does_not_kill_the_handshake():
         echo.srv.close()
 
 
+def test_windows_system_proxy_uses_socks4a():
+    """Chrome sends SOCKS4/4a for a bare Windows system-proxy SOCKS entry.
+
+    Regression: the server only spoke SOCKS5, so browsers configured through Internet
+    Options / Windows Settings failed every CONNECT while SSH attach and SFTP (which use
+    the app's own protocol) kept working.
+    """
+    echo = EchoServer()
+    phone = StubPhone()
+    client = PhoneClient()
+    notices = []
+    client.on_status = notices.append
+    proxy = SocksProxyServer(lambda: client, port=0, on_status=notices.append)
+    try:
+        client.connect("127.0.0.1", phone.port, TOKEN)
+        for _ in range(200):
+            if client.tp and client.tp.alive and phone.seal is not None:
+                break
+            time.sleep(0.02)
+        assert client.tp and client.tp.alive, f"handshake failed: {notices}"
+
+        proxy.start()
+        proxy_port = proxy._srv.getsockname()[1]
+
+        # SOCKS4a keeps the hostname in the request (no local DNS on the PC).
+        s = socks4_connect(proxy_port, "localhost", echo.port, use_4a=True)
+        blob = b"socks4a" * 4096
+        s.sendall(blob)
+        assert recv_exact(s, len(blob)) == blob, "SOCKS4a echo mismatch"
+        s.shutdown(socket.SHUT_WR)
+        assert recv_exact(s, 5) == b"<eof>", "no trailer after SOCKS4a half-close"
+        s.close()
+
+        # Plain SOCKS4, as sent for an IPv4 literal destination.
+        s = socks4_connect(proxy_port, "127.0.0.1", echo.port, use_4a=False)
+        s.sendall(b"literal")
+        assert recv_exact(s, 7) == b"literal", "SOCKS4 echo mismatch"
+        s.close()
+
+        assert phone.opened == 2, phone.opened
+        assert not phone.errors, phone.errors
+        assert not [n for n in notices if "closed" in n.lower()], notices
+    finally:
+        proxy.stop()
+        client.close(silent=True)
+        phone.srv.close()
+        echo.srv.close()
+
+
 if __name__ == "__main__":
     test_browser_load_keeps_the_bridge_up()
     test_proxy_traffic_before_the_seal_does_not_kill_the_handshake()
+    test_windows_system_proxy_uses_socks4a()
     print("ok")

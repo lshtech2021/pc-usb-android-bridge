@@ -406,12 +406,17 @@ product UI uses `CONN_DETACH`.
 > phone's UI. Their results are not carried on this protocol; the PC sees only
 > `state`/`error` in `CONN_LIST_RESULT` and `REMOTE_OUTPUT` once attached.
 
-### 4.8 PROXY_* — reverse tethering (SOCKS5 over the bridge)
+### 4.8 PROXY_* — reverse tethering (SOCKS over the bridge)
 
-The PC runs a local SOCKS5 server (default `127.0.0.1:1080`, port
-configurable). Each SOCKS client connection becomes one proxy stream; the
-**phone opens the outbound TCP socket** on its own network (Wi-Fi / cellular),
-so all DNS resolution happens on the phone.
+The PC runs a local SOCKS server (default `127.0.0.1:1080`, port configurable).
+It accepts SOCKS5 as well as SOCKS4/4a: a bare SOCKS entry in the Windows
+system proxy (WinINET / Internet Options) has no version field, so Chrome and
+other Chromium browsers speak **SOCKS4**, with a SOCKS4a fallback when the
+destination is a hostname
+([Chromium issue 41220871](https://issues.chromium.org/issues/41220871)).
+Each SOCKS client connection becomes one proxy stream; the **phone opens the
+outbound TCP socket** on its own network (Wi-Fi / cellular), so all DNS
+resolution happens on the phone.
 
 **PROXY_OPEN (0x40)** — PC → phone, one per SOCKS CONNECT.
 - `{sid:int, host:string, port:int}` — `host` is the domain name verbatim

@@ -1,8 +1,14 @@
-"""Local SOCKS5 server that tunnels TCP CONNECT streams over the encrypted USB bridge.
+"""Local SOCKS server that tunnels TCP CONNECT streams over the encrypted USB bridge.
 
 The PC never dials out itself: each SOCKS client connection becomes a PROXY_OPEN, and the
 phone opens the outbound socket on its own network (mobile data / Wi-Fi). Domain-name ATYP
 is forwarded verbatim, so DNS resolves on the phone.
+
+Both SOCKS5 and SOCKS4/4a are accepted. Chrome cannot ask for SOCKS5 through the Windows
+system proxy: an unspecified SOCKS entry in WinINET has no version, so Chromium treats it
+as SOCKS4 (falling back to SOCKS4a when it must send a hostname). Supporting only SOCKS5
+therefore made the proxy look broken for system-proxy users even though the tunnel worked.
+See https://issues.chromium.org/issues/41220871.
 
 Stdlib only. The accept thread spawns two daemon threads per stream: a handler (client ->
 phone, also runs the SOCKS handshake) and a writer (phone -> client). Neither the bridge
@@ -125,6 +131,7 @@ class ProxyStream:
         self._open_ok = False
         self._open_rep = REP_GENERAL
         self._serving = False       # writer started: it owns teardown from here on
+        self._socks4 = False        # client negotiated SOCKS4/4a: reply in that dialect
 
     # ---- bridge-thread callbacks (registered via client.alloc_proxy) ----
     def on_opened(self, sid, ok, code, msg):
@@ -290,9 +297,18 @@ class ProxyStream:
         return buf
 
     def _handshake(self):
-        ver, nmethods = self._recv_exact(2)
+        ver = self._recv_exact(1)[0]
+        if ver == 4:
+            self._socks4 = True
+            return self._handshake_socks4()
         if ver != 5:
-            raise SocksError(REP_GENERAL, "not SOCKS5")
+            raise SocksError(REP_GENERAL, "not SOCKS4/5")
+        return self._handshake_socks5()
+
+    def _handshake_socks5(self):
+        nmethods = self._recv_exact(1)[0]
+        if nmethods == 0:
+            raise SocksError(REP_GENERAL, "client offered no auth methods")
         methods = self._recv_exact(nmethods)
         if 0x00 not in methods:
             self._sock.sendall(b"\x05\xFF")
@@ -317,8 +333,39 @@ class ProxyStream:
         (port,) = struct.unpack(">H", self._recv_exact(2))
         return host, port
 
+    def _handshake_socks4(self):
+        """SOCKS4/4a CONNECT: what Chrome sends for a Windows system-proxy SOCKS entry."""
+        cmd = self._recv_exact(1)[0]
+        (port,) = struct.unpack(">H", self._recv_exact(2))
+        dstip = self._recv_exact(4)
+        self._recv_until_nul()                       # USERID, ignored
+        if dstip[:3] == b"\x00\x00\x00" and dstip[3] != 0:
+            # SOCKS4a: the real destination follows as a NUL-terminated hostname.
+            host = self._recv_until_nul().decode("utf-8", "replace")
+        else:
+            host = ".".join(str(b) for b in dstip)
+        if cmd != 0x01:
+            raise SocksError(REP_CMD_UNSUPPORTED, "only CONNECT is supported")
+        if not host:
+            raise SocksError(REP_GENERAL, "empty destination")
+        return host, port
+
+    def _recv_until_nul(self, limit: int = 255) -> bytes:
+        buf = bytearray()
+        while len(buf) < limit:
+            b = self._recv_exact(1)
+            if b == b"\x00":
+                return bytes(buf)
+            buf += b
+        raise SocksError(REP_GENERAL, "SOCKS4 field too long")
+
     def _reply(self, rep: int):
         try:
+            if self._socks4:
+                # SOCKS4 has one rejection code; granted=0x5A, rejected=0x5B.
+                code = 0x5A if rep == REP_OK else 0x5B
+                self._sock.sendall(b"\x00" + bytes([code]) + b"\x00" * 6)
+                return
             # BND.ADDR/BND.PORT are unused; 0.0.0.0:0 is conventional.
             self._sock.sendall(b"\x05" + bytes([rep]) + b"\x00\x01" + b"\x00" * 6)
         except Exception:
@@ -348,7 +395,7 @@ def _shutdown_write(sock):
 
 
 class SocksProxyServer:
-    """SOCKS5 listener on loopback; refuses traffic while the bridge is down."""
+    """SOCKS4/4a + SOCKS5 listener on loopback; refuses traffic while the bridge is down."""
 
     def __init__(self, get_client, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                  on_status=None, on_state=None):
