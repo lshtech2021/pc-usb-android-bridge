@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
+import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -654,7 +655,17 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
     }
 
     private fun post(task: () -> Unit) {
-        runCatching { remoteOps.execute(task) }        // The queue is shut down after close(), so new tasks are ignored
+        runCatching {
+            remoteOps.execute {
+                // A bad frame must never kill the app: an exception escaping this
+                // worker reaches Android's default handler, which kills the process.
+                try {
+                    task()
+                } catch (e: Exception) {
+                    Log.e("SessionHandler", "remote op failed", e)
+                }
+            }
+        }        // The queue is shut down after close(), so new tasks are ignored
     }
 
     // ---------- Feature 4: remote file explorer over phone-managed SFTP ----------

@@ -11,9 +11,8 @@ import com.jcraft.jsch.UIKeyboardInteractive
 import com.jcraft.jsch.UserInfo
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.OutputStream
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
 import java.security.Security
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * SSH session via mwiede JSch + Bouncy Castle (OpenSSH/PEM, ed25519 host keys & client keys).
@@ -26,9 +25,10 @@ class RemoteSession(
     private val prompt: AuthBridge? = null
 ) {
     private var session: Session? = null
-    private var channel: Channel? = null
-    private val stdin = PipedOutputStream()
-    private val stdinPipe = PipedInputStream(stdin, 1 shl 20)
+    @Volatile private var channel: Channel? = null
+    @Volatile private var stdinOut: OutputStream? = null
+    private val stdinLock = Any()
+    private val dead = AtomicBoolean(false)
 
     data class Auth(
         val password: String?,
@@ -50,23 +50,31 @@ class RemoteSession(
         ch.setPty(true)
         ch.setPtySize(120, 30, 0, 0)
         runCatching { ch.setEnv("TERM", "xterm-256color") }
-        ch.setInputStream(stdinPipe)
+        // Write stdin straight to the channel. A PipedInputStream pump thread dies
+        // silently when its last writer thread is torn down (USB SessionHandler
+        // close -> remoteOps.shutdownNow), while the SSH channel keeps reporting
+        // connected; the next attach then fails with "Read end dead" on the first
+        // key press. A channel OutputStream reports a closed channel as an ordinary
+        // IOException on the writer instead.
+        val out = ch.getOutputStream()
         ch.setOutputStream(fwdStream("out"))
         ch.connect(10_000)
         channel = ch
-        watchClose(ch) { onClose(0, "shell exited") }
+        stdinOut = out
+        watchClose(ch) { markDead(0, "shell exited") }
     }
 
     fun execSsh(host: String, port: Int, user: String, auth: Auth, command: String) =
         connect(host, port, user, auth) {
             val ch = session!!.openChannel("exec") as ChannelExec
             ch.setCommand(command)
-            ch.setInputStream(stdinPipe)
+            val out = ch.getOutputStream()
             ch.setOutputStream(fwdStream("out"))
             ch.setErrStream(fwdStream("err"))
             ch.connect(10_000)
             channel = ch
-            watchClose(ch) { onClose(ch.exitStatus, "exec finished") }
+            stdinOut = out
+            watchClose(ch) { markDead(ch.exitStatus, "exec finished") }
         }
 
     /** Open an SFTP channel on the connected session (file explorer feature).
@@ -209,15 +217,53 @@ class RemoteSession(
             onOutput(stream, b.copyOfRange(off, off + len))
     }
 
-    fun writeStdin(data: ByteArray) {
-        stdin.write(data)
-        stdin.flush()
+    /**
+     * Write PC input to the SSH channel.
+     *
+     * Returns false when the session is already gone and never throws: a write failure
+     * marks the session dead so ConnectionHub can detach and tell the PC. An exception
+     * escaping here used to kill the whole app, because it ran on the remoteOps worker
+     * thread whose uncaught-exception handler is Android's process killer.
+     */
+    fun writeStdin(data: ByteArray): Boolean {
+        var ok = false
+        synchronized(stdinLock) {
+            val ch = channel
+            val out = stdinOut
+            if (dead.get() || ch == null || out == null || !ch.isConnected || ch.isClosed) {
+                return@synchronized
+            }
+            try {
+                out.write(data)
+                out.flush()
+                ok = true
+            } catch (e: Exception) {
+                Log.w(TAG, "stdin write failed: ${e.message}")
+                markDead(0, "stdin write failed: ${e.message}")
+            }
+        }
+        return ok
     }
 
+    fun isAlive(): Boolean = !dead.get() && channel?.isConnected == true
+
     fun close() {
-        runCatching { stdin.close() }
+        // ConnectionHub already owns the state transition here (stop / failed start).
+        shutdown(notifyHub = false)
+    }
+
+    private fun markDead(code: Int, reason: String) {
+        shutdown(notifyHub = true, code = code, reason = reason)
+    }
+
+    /** Single-shot teardown; [notifyHub] is false when the caller updates hub state itself. */
+    private fun shutdown(notifyHub: Boolean, code: Int = 0, reason: String = "") {
+        if (!dead.compareAndSet(false, true)) return
+        runCatching { stdinOut?.close() }
         runCatching { channel?.disconnect() }
         runCatching { session?.disconnect() }
+        stdinOut = null
+        if (notifyHub) onClose(code, reason)
     }
 
     companion object {

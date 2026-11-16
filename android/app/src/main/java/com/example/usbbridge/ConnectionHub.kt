@@ -165,7 +165,9 @@ object ConnectionHub {
     fun attach(handler: SessionHandler, channel: Int, connectionId: String): ByteArray {
         val live = lives[connectionId] ?: throw HubException("CONN_NOT_FOUND", "unknown id")
         synchronized(lock) {
-            if (live.state != STATE_RUNNING || live.session == null)
+            // isAlive() catches the case where JSch's stdin pump or the transport died
+            // without a state transition: a dead session must not be attachable.
+            if (live.state != STATE_RUNNING || live.session?.isAlive() != true)
                 throw HubException("CONN_NOT_RUNNING", "connection is not running")
             if (live.attach != null)
                 throw HubException("CONN_BUSY", "already attached")
@@ -245,15 +247,18 @@ object ConnectionHub {
         }
     }
 
+    /** PC input for an attached channel; false when no live attach owns [channel]. */
     fun writeStdin(channel: Int, data: ByteArray): Boolean {
-        lives.values.forEach { live ->
-            val att = live.attach
-            if (att != null && att.channel == channel) {
-                live.session?.writeStdin(data)
-                return true
-            }
+        val live = lives.values.firstOrNull { it.attach?.channel == channel } ?: return false
+        val session = live.session
+        if (session == null || !session.writeStdin(data)) {
+            // A dead stdin must not stay attached: clearing the session here sends
+            // REMOTE_CLOSE to the PC instead of letting the next key press throw into
+            // the remoteOps executor (which used to kill the process). onSessionClosed
+            // ignores the call when a newer session already replaced this one.
+            onSessionClosed(live, session, 0, "stdin write failed")
         }
-        return false
+        return true
     }
 
     private fun openWithTofu(ctx: Context, profile: ConnectionStore.Profile, live: Live) {
@@ -314,9 +319,12 @@ object ConnectionHub {
                     return out
                 }
             }
-            val rs = RemoteSession(keys,
+            // The close callback carries the session identity so a late "closed" from a
+            // session that was already replaced cannot clear the new one.
+            lateinit var rs: RemoteSession
+            rs = RemoteSession(keys,
                 { stream, data -> onOutput(live, stream, data) },
-                { code, reason -> onSessionClosed(live, code, reason) },
+                { code, reason -> onSessionClosed(live, rs, code, reason) },
                 bridge)
             try {
                 rs.openSsh(profile.host, profile.port, profile.user,
@@ -367,8 +375,10 @@ object ConnectionHub {
         }
     }
 
-    private fun onSessionClosed(live: Live, code: Int, reason: String) {
+    private fun onSessionClosed(live: Live, session: RemoteSession?, code: Int, reason: String) {
         val (att, f) = synchronized(lock) {
+            // Stale callback: a newer session is live, leave it (and its attach) alone.
+            if (live.session !== session) return
             val a = live.attach
             live.attach = null
             val fsb = live.fs
