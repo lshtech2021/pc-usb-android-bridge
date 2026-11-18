@@ -62,6 +62,10 @@ class RemoteSession(
     fun openSsh(host: String, port: Int, user: String, auth: Auth) = connect(host, port, user, auth) {
         val ch = session!!.openChannel("shell") as ChannelShell
         ch.setPty(true)
+        // TERM must travel in the PTY request. JSch's default ttype is "vt100", and
+        // sshd drops setEnv("TERM") unless AcceptEnv lists it, so full-screen TUI
+        // programs negotiated the wrong terminal capabilities.
+        ch.setPtyType("xterm-256color")
         ch.setPtySize(120, 30, 0, 0)
         runCatching { ch.setEnv("TERM", "xterm-256color") }
         // Write stdin straight to the channel. A PipedInputStream pump thread dies
