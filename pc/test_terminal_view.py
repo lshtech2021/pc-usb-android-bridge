@@ -102,20 +102,32 @@ def test_selection_and_clipboard():
     w.close()
 
 
-def test_ctrl_c_copy_vs_interrupt():
+def test_ctrl_c_always_interrupts_and_copy_needs_shift():
     w = make_widget()
     feed(w, b"hello")
     out = []
     w.bytes_out.connect(out.append)
-    w._sel_anchor = w._sel_cursor = None
-    key(w, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
-    assert out == [b"\x03"]
+    QApplication.clipboard().setText("sentinel")
     w._sel_anchor = (0, 0)
     w._sel_cursor = (0, 4)
-    out.clear()
     key(w, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+    assert out == [b"\x03"], "Ctrl+C must reach the remote even with a selection"
+    assert QApplication.clipboard().text() == "sentinel", "Ctrl+C must not copy"
+
+    out.clear()
+    key(w, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier
+        | Qt.KeyboardModifier.ShiftModifier)
     assert out == []
     assert QApplication.clipboard().text() == "hello"
+    w.close()
+
+
+def test_detached_banner_paints():
+    w = make_widget()
+    w.set_attached(False)
+    _APP.processEvents()
+    img = w.grab().toImage()
+    assert not img.isNull()
     w.close()
 
 

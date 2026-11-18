@@ -16,7 +16,7 @@ object FrameIO {
     const val REMOTE_OPEN = 0x10; const val REMOTE_DATA = 0x11
     const val REMOTE_OUTPUT = 0x12; const val REMOTE_CLOSE = 0x13
     const val CONN_LIST = 0x14; const val CONN_LIST_RESULT = 0x15
-    const val CONN_ATTACH = 0x16; const val CONN_DETACH = 0x17
+    const val CONN_ATTACH = 0x16; const val CONN_DETACH = 0x17; const val CONN_STOP = 0x18
     const val ACK = 0x20; const val ERROR = 0x21; const val PING = 0x30; const val PONG = 0x31
     const val PROXY_OPEN = 0x40; const val PROXY_OPENED = 0x41
     const val PROXY_DATA = 0x42; const val PROXY_CLOSE = 0x43

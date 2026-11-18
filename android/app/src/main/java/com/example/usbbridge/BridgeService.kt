@@ -546,6 +546,19 @@ class SessionHandler(private val ctx: Context, private val sock: java.net.Socket
                     send(FrameIO.ACK, JSONObject().put("ok", true).put("channel", optInt("channel")))
                 }
 
+                FrameIO.CONN_STOP -> {
+                    val ch = optInt("channel")
+                    post {
+                        // Closing the SSH session releases a hung foreground program
+                        // (e.g. a remote TUI left in raw mode); stop() sends REMOTE_CLOSE.
+                        if (!ConnectionHub.stopAttached(ch)) {
+                            send(FrameIO.ERROR, JSONObject().put("channel", ch)
+                                .put("code", "CONN_NOT_RUNNING")
+                                .put("message", "no attached session for this channel"))
+                        }
+                    }
+                }
+
                 // ---- Reverse tethering (SOCKS5): all O(1); blocking socket I/O runs on per-stream threads ----
                 FrameIO.PROXY_OPEN -> {
                     val sid = optInt("sid")

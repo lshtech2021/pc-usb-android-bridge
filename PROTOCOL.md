@@ -42,7 +42,7 @@ only** — `127.0.0.1:9999`. The PC reaches it through an adb port forward:
 |---|---------|-----------|----------|
 | F1 | File transfer | both | `FILE_META` / `FILE_CHUNK` / `FILE_END` (+ `ACK`) |
 | F2 | Text messages | both | `TEXT` (+ `ACK` from phone) |
-| F3 | Remote terminal over phone-managed SSH | PC drives, phone owns SSH | `CONN_LIST` / `CONN_ATTACH` / `CONN_DETACH` / `REMOTE_DATA` / `REMOTE_OUTPUT` / `REMOTE_CLOSE` |
+| F3 | Remote terminal over phone-managed SSH | PC drives, phone owns SSH | `CONN_LIST` / `CONN_ATTACH` / `CONN_DETACH` / `CONN_STOP` / `REMOTE_DATA` / `REMOTE_OUTPUT` / `REMOTE_CLOSE` |
 | F4 | Reverse tethering (SOCKS5) | PC-initiated streams, phone dials out | `PROXY_OPEN` / `PROXY_OPENED` / `PROXY_DATA` / `PROXY_CLOSE` |
 | F5 | Remote file explorer (SFTP over phone-managed SSH) | PC drives, phone owns SSH + SFTP | `FS_OPEN` / `FS_OPENED` / `FS_CLOSE` / `FS_LIST` / `FS_LIST_RESULT` / `FS_MKDIR` / `FS_DELETE` / `FS_RENAME` / `FS_OP_RESULT` / `FS_DL_META` / `FS_DL_RESULT` / `FS_UL_META` / `FS_UL_RESULT` / `FS_CHUNK` / `FS_END` / `FS_ABORT` (+ `ACK {fs_id}`) |
 | — | Handshake / keepalive / errors | both | `HELLO` / `ACK` / `PING` / `PONG` / `ERROR` |
@@ -246,6 +246,7 @@ key      = HKDF-SHA256(salt, info="usb-bridge-link-v1", ikm, L=32)   (RFC 5869)
 | `CONN_LIST_RESULT` | `0x15` | phone → PC | `{connections: […]}` | — |
 | `CONN_ATTACH` | `0x16` | PC → phone | `{channel, connection_id}` | — |
 | `CONN_DETACH` | `0x17` | PC → phone | `{channel}` | — |
+| `CONN_STOP` | `0x18` | PC → phone | `{channel}` | — |
 | `ACK` | `0x20` | phone → PC | varies by context (§4.3) | attach backlog |
 | `ERROR` | `0x21` | both | `{code, message, …ctx}` | — |
 | `PING` | `0x30` | both | `{}` | — |
@@ -398,9 +399,17 @@ connection id"}`. Product path: §4.7.
 - `{channel:int}` → `ACK {ok:true, channel}`. Output keeps accumulating in the
   ring buffer for the next attach.
 
+**CONN_STOP (0x18)** — PC asks the phone to **end** the SSH session behind an
+attached channel (recovery for a remote TUI that hung after exit and left the
+PTY in raw mode).
+- `{channel:int}` — no ACK. The phone stops the hub session, which sends
+  `REMOTE_CLOSE {channel, code:0, reason:"stopped on phone"}` to the attached
+  PC. If no session is attached to `channel`, the phone replies with
+  `ERROR {channel, code:"CONN_NOT_RUNNING", message}`.
+
 The phone also accepts `REMOTE_CLOSE` from the PC (legacy close request): it
 detaches the hub attachment and closes any legacy session, without ACK. The
-product UI uses `CONN_DETACH`.
+product UI uses `CONN_DETACH`; `CONN_STOP` is the explicit "kill it" action.
 
 > SSH auth, MFA (keyboard-interactive), and host-key TOFU all happen on the
 > phone's UI. Their results are not carried on this protocol; the PC sees only
@@ -594,7 +603,7 @@ lock with terminal output, exactly like phone→PC file sends (§4.5).
 | `PC_ALREADY_CONNECTED` | phone | a live session already holds this `pc_id` |
 | `PC_KEY_CHANGED` | phone | trusted `pc_id` presented a different long-term pubkey |
 | `CONN_NOT_FOUND` | phone | `CONN_ATTACH` for an unknown profile id |
-| `CONN_NOT_RUNNING` | phone | `CONN_ATTACH` for a profile that is not `running` |
+| `CONN_NOT_RUNNING` | phone | `CONN_ATTACH` for a profile that is not `running`; `CONN_STOP` for a channel with no attached session |
 | `CONN_BUSY` | phone | `CONN_ATTACH` while another PC channel is attached |
 | `CHANNEL_OPEN_FAILED` | phone | legacy `REMOTE_OPEN` rejection; any other attach failure |
 | `FILE_WRITE_FAILED` | phone | oversized FILE_META; cannot create/write the sink |
@@ -699,6 +708,9 @@ PC                                     Phone (ConnectionHub)
  │◄── ACK {channel:8, ok:true} + backlog│
  │◄── REMOTE_CLOSE {channel:8,          │  SSH exited (or stopped on phone)
  │      code, reason}                   │
+ │ CONN_STOP {channel:8} ─────────────►│  hung TUI / stuck foreground job
+ │◄── REMOTE_CLOSE {channel:8,          │  session stopped on the phone
+ │      code:0, reason:"stopped on phone"}│
 ```
 
 ### 6.6 Reverse tethering (SOCKS5)
@@ -911,6 +923,7 @@ third-party implementation must reproduce them exactly.
 | `list_connections()` | `CONN_LIST {}` |
 | `attach(connection_id)` | allocates channel; `CONN_ATTACH {channel, connection_id}` |
 | `detach(ch)` / `remote_close(ch)` | `CONN_DETACH {channel}` |
+| `stop_connection(ch)` | `CONN_STOP {channel}`; the phone answers with `REMOTE_CLOSE` |
 | `remote_input(ch, bytes)` | `REMOTE_DATA {channel}` + payload |
 | `alloc_proxy(cbs)` + `proxy_send_open` / `proxy_data` / `proxy_close` | `PROXY_OPEN` / `PROXY_DATA` / `PROXY_CLOSE` |
 | `fs_open(connection_id)` / `fs_close(ch)` | `FS_OPEN` / `FS_CLOSE` |

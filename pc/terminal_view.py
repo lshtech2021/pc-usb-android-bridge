@@ -444,6 +444,8 @@ class TerminalWidget(QAbstractScrollArea):
 
         self._paint_cursor(painter, start, visible, hscroll, cw, ch)
         self._paint_preedit(painter, start, hscroll, cw, ch)
+        if not self._attached:
+            self._paint_detached_banner(painter)
         painter.end()
 
     def _paint_cursor(self, painter, start, visible, hscroll, cw, ch):
@@ -489,6 +491,28 @@ class TerminalWidget(QAbstractScrollArea):
             QRectF(x, y, cw * max(1, cells), ch),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
             self._preedit)
+
+    def _paint_detached_banner(self, painter):
+        """Small top-centre hint so a detached terminal is not mistaken for a hang."""
+        text = "Not attached — click Attach to reconnect"
+        font = QFont(self._font)
+        font.setBold(True)
+        metrics = QFontMetricsF(font)
+        pad_x, pad_y = 14.0, 7.0
+        width = metrics.horizontalAdvance(text) + pad_x * 2
+        height = metrics.height() + pad_y * 2
+        vp = self.viewport().rect()
+        box = QRectF(vp.center().x() - width / 2,
+                     vp.top() + max(8.0, self._cell_h / 2),
+                     width, height)
+        bg = QColor(theme.terminal_color("selection"))
+        bg.setAlpha(230)
+        painter.setFont(font)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(box, 7, 7)
+        painter.setPen(QColor(theme.terminal_color("fg")))
+        painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), text)
 
     # ------------------------------------------------------------------
     # Selection / clipboard
@@ -621,10 +645,9 @@ class TerminalWidget(QAbstractScrollArea):
             event.accept()
             return
         if ctrl and key == Qt.Key.Key_C and not shift:
-            if self._has_selection():
-                self.copy()
-            else:
-                self._send_text("\x03")
+            # Always interrupt the remote program, even with a local selection:
+            # a stuck TUI must stay ^C-able. Copy is Ctrl+Shift+C / Ctrl+Insert.
+            self._send_text("\x03")
             event.accept()
             return
         if ctrl and key == Qt.Key.Key_V and not shift:
