@@ -35,6 +35,7 @@ TERMINAL_STATES = {
     "detached": ("dot_disconnected", "Not attached"),
     "attaching": ("dot_connecting", "Attaching…"),
     "attached": ("dot_connected", "Attached"),
+    "stopping": ("dot_connecting", "Stopping…"),
     "error": ("dot_error", "Attach failed"),
 }
 
@@ -66,7 +67,7 @@ SHORTCUTS = [
     ("Ctrl+0", "Reset terminal text size"),
     ("Ctrl+Shift+C", "Copy from the terminal"),
     ("Ctrl+Shift+V", "Paste into the terminal"),
-    ("Ctrl+C", "Terminal: copy if text is selected, else interrupt the remote"),
+    ("Ctrl+C", "Interrupt the remote program (copy with Ctrl+Shift+C)"),
     ("Shift+PageUp/PageDown", "Scroll terminal history (mouse wheel also works)"),
     ("Ctrl+Q", "Quit"),
 ]
@@ -240,6 +241,9 @@ class MainWindow(QMainWindow):
         self._menu_action(m_conn, "&Refresh list", self.refresh_connections, "Ctrl+R")
         self._menu_action(m_conn, "&Attach", self.attach_conn)
         self._menu_action(m_conn, "De&tach", self.detach_conn)
+        self.act_stop_session = self._menu_action(
+            m_conn, "Stop session on &phone", self.stop_conn)
+        self.act_stop_session.setEnabled(False)
 
         m_view = bar.addMenu("&View")
         self.act_fullscreen = self._menu_action(
@@ -789,6 +793,11 @@ class MainWindow(QMainWindow):
         self.btn_conn_detach = QPushButton("Detach")
         self.btn_conn_detach.setToolTip("Leave the session running on the phone")
         self.btn_conn_detach.clicked.connect(self.detach_conn)
+        self.btn_conn_stop = QPushButton("Stop on phone")
+        self.btn_conn_stop.setToolTip(
+            "End this SSH session on the phone (use when the remote program hangs)")
+        self.btn_conn_stop.setEnabled(False)
+        self.btn_conn_stop.clicked.connect(self.stop_conn)
         self.btn_fullscreen = QPushButton("Full screen")
         self.btn_fullscreen.setCheckable(True)
         self.btn_fullscreen.setToolTip("Hide all chrome and give the terminal the window (F11)")
@@ -798,6 +807,7 @@ class MainWindow(QMainWindow):
         h.addWidget(self.btn_conn_refresh)
         h.addWidget(self.btn_conn_attach)
         h.addWidget(self.btn_conn_detach)
+        h.addWidget(self.btn_conn_stop)
         h.addWidget(theme.vertical_separator())
         h.addWidget(self.btn_fullscreen)
         v.addLayout(h)
@@ -832,6 +842,14 @@ class MainWindow(QMainWindow):
 
     def _set_term_state(self, state: str, detail: str = ""):
         self.term_pill.set_state(state, detail)
+        # Stopping the phone-side session only makes sense while attached.
+        attached = state == "attached"
+        btn = getattr(self, "btn_conn_stop", None)
+        if btn is not None:
+            btn.setEnabled(attached)
+        act = getattr(self, "act_stop_session", None)
+        if act is not None:
+            act.setEnabled(attached)
 
     def refresh_connections(self):
         if not (self.client.tp and self.client.tp.alive):
@@ -882,6 +900,16 @@ class MainWindow(QMainWindow):
             self.client.detach(self.ch)
         self._reset_attach()
 
+    def stop_conn(self):
+        """Ask the phone to end the SSH session (releases a hung foreground TUI)."""
+        if not (self.client.tp and self.client.tp.alive):
+            return QMessageBox.warning(self, "Notice", "Please connect to the phone first")
+        if self.ch is None:
+            return
+        self.client.stop_connection(self.ch)
+        self._set_term_state("stopping", "asked the phone to stop the session")
+        self._status("Stopping the session on the phone…", 4000)
+
     def _reset_attach(self):
         self.ch = None
         self.term.set_attached(False)
@@ -910,6 +938,13 @@ class MainWindow(QMainWindow):
 
     def _on_rclose(self, ch, code, reason):
         if ch == self.ch:
+            reason = reason or "shell exited"
+            # Without this, a detached terminal keeps its last frame and looks
+            # identical to a hung remote program.
+            self.term.feed(("\r\n\x1b[33m[session closed: %s (code %s)]\x1b[0m\r\n"
+                            % (reason, code)).encode("utf-8", "replace"))
+            self.msg_log.add_notice(
+                f"Terminal session closed: {reason} (code {code})")
             self._set_term_state("detached", f"session closed ({code})")
             self.term.set_attached(False)
             self.ch = None

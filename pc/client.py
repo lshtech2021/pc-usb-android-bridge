@@ -264,6 +264,15 @@ class PhoneClient:
             self.tp.send(MsgType.CONN_DETACH, {"channel": ch})
             self.channels.pop(ch, None)
 
+    def stop_connection(self, ch: int):
+        """Ask the phone to stop the SSH session behind this attach channel.
+
+        Keep the channel record until REMOTE_CLOSE arrives: that frame carries the
+        phone's reason and drives the terminal's closed-session notice.
+        """
+        if ch in self.channels and self.tp and self.tp.alive:
+            self.tp.send(MsgType.CONN_STOP, {"channel": ch})
+
     def remote_input(self, ch: int, data: bytes):
         self.tp.send(MsgType.REMOTE_DATA, {"channel": ch}, data)
 

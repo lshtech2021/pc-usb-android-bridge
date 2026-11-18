@@ -226,6 +226,17 @@ object ConnectionHub {
         }
     }
 
+    /**
+     * PC-initiated stop: end the phone-side SSH session bound to [channel].
+     * Returns false when that channel is not attached (already detached/stopped).
+     * [stop] sends REMOTE_CLOSE to the attached PC, so the caller needs no ACK.
+     */
+    fun stopAttached(channel: Int): Boolean {
+        val live = lives.values.firstOrNull { it.attach?.channel == channel } ?: return false
+        stop(live.id)
+        return true
+    }
+
     /** Open an SFTP channel on a running connection and bind it to a PC channel. */
     fun openFs(handler: SessionHandler, channel: Int, connectionId: String) {
         val live = lives[connectionId] ?: throw HubException("CONN_NOT_FOUND", "unknown id")
